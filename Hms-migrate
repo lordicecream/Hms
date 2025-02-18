@@ -1,0 +1,88 @@
+-- Step 1: Copy Schema Metadata (DBS)
+INSERT INTO target_metastore.public.dbs
+SELECT * FROM source_metastore.public.dbs WHERE name = 'abc';
+
+-- Step 2: Copy Tables (TBLS)
+INSERT INTO target_metastore.public.tbls
+SELECT * FROM source_metastore.public.tbls
+WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc');
+
+-- Step 3: Copy Storage Descriptions (SDS)
+INSERT INTO target_metastore.public.sds
+SELECT * FROM source_metastore.public.sds
+WHERE sd_id IN (
+    SELECT sd_id FROM source_metastore.public.tbls
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+);
+
+-- Step 4: Copy Column Metadata (COLUMNS_V2)
+INSERT INTO target_metastore.public.columns_v2
+SELECT * FROM source_metastore.public.columns_v2
+WHERE cd_id IN (
+    SELECT cd_id FROM source_metastore.public.sds
+    WHERE sd_id IN (
+        SELECT sd_id FROM source_metastore.public.tbls
+        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+    )
+);
+
+-- Step 5: Copy Table Parameters (TABLE_PARAMS)
+INSERT INTO target_metastore.public.table_params
+SELECT * FROM source_metastore.public.table_params
+WHERE tbl_id IN (
+    SELECT tbl_id FROM source_metastore.public.tbls
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+);
+
+-- Step 6: Copy Partition Keys (PARTITION_KEYS)
+INSERT INTO target_metastore.public.partition_keys
+SELECT * FROM source_metastore.public.partition_keys
+WHERE tbl_id IN (
+    SELECT tbl_id FROM source_metastore.public.tbls
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+);
+
+-- Step 7: Copy Partitions (PARTITIONS)
+INSERT INTO target_metastore.public.partitions
+SELECT * FROM source_metastore.public.partitions
+WHERE tbl_id IN (
+    SELECT tbl_id FROM source_metastore.public.tbls
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+);
+
+-- Step 8: Copy Partition Parameters (PARTITION_PARAMS)
+INSERT INTO target_metastore.public.partition_params
+SELECT * FROM source_metastore.public.partition_params
+WHERE part_id IN (
+    SELECT part_id FROM source_metastore.public.partitions
+    WHERE tbl_id IN (
+        SELECT tbl_id FROM source_metastore.public.tbls
+        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+    )
+);
+
+-- Step 9: Copy Partition Storage (SDS for Partitions)
+INSERT INTO target_metastore.public.sds
+SELECT * FROM source_metastore.public.sds
+WHERE sd_id IN (
+    SELECT sd_id FROM source_metastore.public.partitions
+    WHERE tbl_id IN (
+        SELECT tbl_id FROM source_metastore.public.tbls
+        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+    )
+);
+
+-- Step 10: Copy Table Constraints (Foreign Keys, Unique Keys, etc.)
+INSERT INTO target_metastore.public.key_constraints
+SELECT * FROM source_metastore.public.key_constraints
+WHERE tbl_id IN (
+    SELECT tbl_id FROM source_metastore.public.tbls
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+);
+
+-- Step 11: Final Validation
+SELECT * FROM target_metastore.public.dbs WHERE name = 'abc';
+SELECT * FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc');
+SELECT * FROM target_metastore.public.partitions WHERE tbl_id IN (
+    SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+);
