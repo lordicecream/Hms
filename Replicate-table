@@ -1,0 +1,70 @@
+-- Step 1: Ensure the schema (DBS entry) exists in the target metastore
+INSERT INTO target_metastore.public.dbs
+SELECT * FROM source_metastore.public.dbs WHERE name = 'abc'
+ON CONFLICT (db_id) DO NOTHING;
+
+-- Step 2: Copy the specific table metadata (TBLS)
+INSERT INTO target_metastore.public.tbls
+SELECT * FROM source_metastore.public.tbls
+WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+AND tbl_name = 'kunal'
+ON CONFLICT (tbl_id) DO NOTHING;
+
+-- Step 3: Copy Storage Description (SDS) for the table
+INSERT INTO target_metastore.public.sds
+SELECT * FROM source_metastore.public.sds
+WHERE sd_id = (SELECT sd_id FROM source_metastore.public.tbls WHERE tbl_name = 'kunal')
+ON CONFLICT (sd_id) DO NOTHING;
+
+-- Step 4: Copy Column Metadata (COLUMNS_V2)
+INSERT INTO target_metastore.public.columns_v2
+SELECT * FROM source_metastore.public.columns_v2
+WHERE cd_id = (SELECT cd_id FROM source_metastore.public.sds
+               WHERE sd_id = (SELECT sd_id FROM source_metastore.public.tbls WHERE tbl_name = 'kunal'))
+ON CONFLICT (cd_id, column_name) DO NOTHING;
+
+-- Step 5: Copy Table Parameters (TABLE_PARAMS)
+INSERT INTO target_metastore.public.table_params
+SELECT * FROM source_metastore.public.table_params
+WHERE tbl_id = (SELECT tbl_id FROM source_metastore.public.tbls WHERE tbl_name = 'kunal')
+ON CONFLICT (tbl_id, param_key) DO NOTHING;
+
+-- Step 6: Copy Partition Keys (PARTITION_KEYS) for the table
+INSERT INTO target_metastore.public.partition_keys
+SELECT * FROM source_metastore.public.partition_keys
+WHERE tbl_id = (SELECT tbl_id FROM source_metastore.public.tbls WHERE tbl_name = 'kunal')
+ON CONFLICT (pk_id) DO NOTHING;
+
+-- Step 7: Copy Partitions (PARTITIONS) for the table
+INSERT INTO target_metastore.public.partitions
+SELECT * FROM source_metastore.public.partitions
+WHERE tbl_id = (SELECT tbl_id FROM source_metastore.public.tbls WHERE tbl_name = 'kunal')
+ON CONFLICT (part_id) DO NOTHING;
+
+-- Step 8: Copy Partition Parameters (PARTITION_PARAMS)
+INSERT INTO target_metastore.public.partition_params
+SELECT * FROM source_metastore.public.partition_params
+WHERE part_id IN (
+    SELECT part_id FROM source_metastore.public.partitions
+    WHERE tbl_id = (SELECT tbl_id FROM source_metastore.public.tbls WHERE tbl_name = 'kunal')
+)
+ON CONFLICT (part_id, param_key) DO NOTHING;
+
+-- Step 9: Copy Storage Description for Partitions (SDS for Partitions)
+INSERT INTO target_metastore.public.sds
+SELECT * FROM source_metastore.public.sds
+WHERE sd_id IN (
+    SELECT sd_id FROM source_metastore.public.partitions
+    WHERE tbl_id = (SELECT tbl_id FROM source_metastore.public.tbls WHERE tbl_name = 'kunal')
+)
+ON CONFLICT (sd_id) DO NOTHING;
+
+-- Step 10: Copy Table Constraints (Foreign Keys, Unique Keys, etc.)
+INSERT INTO target_metastore.public.key_constraints
+SELECT * FROM source_metastore.public.key_constraints
+WHERE tbl_id = (SELECT tbl_id FROM source_metastore.public.tbls WHERE tbl_name = 'kunal')
+ON CONFLICT (uk_id) DO NOTHING;
+
+-- Step 11: Final Validation Queries
+SELECT * FROM target_metastore.public.tbls WHERE tbl_name = 'kunal';
+SELECT * FROM target_metastore.public.partitions WHERE tbl_id = (SELECT tbl_id FROM target_metastore.public.tbls WHERE tbl_name = 'kunal');
