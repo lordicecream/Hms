@@ -1,126 +1,57 @@
--- Step 1: Copy schema (dbs table)
-INSERT INTO target_metastore.public.dbs
+-- Step 1: Insert abc Schema Without db_id Check
+INSERT INTO target_metastore.public.dbs 
 SELECT * FROM source_metastore.public.dbs 
-WHERE name = 'abc' 
+WHERE name = 'abc'
 AND NOT EXISTS (
     SELECT 1 FROM target_metastore.public.dbs WHERE name = 'abc'
 );
 
--- Step 2: Copy tables for abc schema
-INSERT INTO target_metastore.public.tbls
-SELECT * FROM source_metastore.public.tbls 
-WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.tbls 
-    WHERE tbl_id IN (
-        SELECT tbl_id FROM source_metastore.public.tbls 
-        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-    )
-);
-
--- Step 3: Copy storage descriptors (sds table)
-INSERT INTO target_metastore.public.sds
-SELECT * FROM source_metastore.public.sds 
-WHERE sd_id IN (
-    SELECT sd_id FROM source_metastore.public.tbls 
-    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-) 
-AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.sds 
-    WHERE sd_id IN (
-        SELECT sd_id FROM target_metastore.public.tbls 
-        WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
-    )
-);
-
--- Step 4: Copy column definitions (columns_v2 table)
-INSERT INTO target_metastore.public.columns_v2
-SELECT * FROM source_metastore.public.columns_v2 
+-- Step 2: Insert Column Descriptors (cds)
+INSERT INTO target_metastore.public.cds
+SELECT * FROM source_metastore.public.cds
 WHERE cd_id IN (
     SELECT cd_id FROM source_metastore.public.sds 
     WHERE sd_id IN (
         SELECT sd_id FROM source_metastore.public.tbls 
         WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
     )
-) 
+)
 AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.columns_v2 
-    WHERE cd_id IN (
-        SELECT cd_id FROM target_metastore.public.sds 
-        WHERE sd_id IN (
-            SELECT sd_id FROM target_metastore.public.tbls 
-            WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
-        )
-    )
+    SELECT 1 FROM target_metastore.public.cds WHERE cd_id = source_metastore.public.cds.cd_id
 );
 
--- Step 5: Copy partition keys
-INSERT INTO target_metastore.public.partition_keys
-SELECT * FROM source_metastore.public.partition_keys 
-WHERE tbl_id IN (
-    SELECT tbl_id FROM source_metastore.public.tbls 
-    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-) 
-AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.partition_keys 
-    WHERE tbl_id IN (
-        SELECT tbl_id FROM target_metastore.public.tbls 
-        WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
-    )
-);
-
--- Step 6: Copy partitions
-INSERT INTO target_metastore.public.partitions
-SELECT * FROM source_metastore.public.partitions 
-WHERE tbl_id IN (
-    SELECT tbl_id FROM source_metastore.public.tbls 
-    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-) 
-AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.partitions 
-    WHERE tbl_id IN (
-        SELECT tbl_id FROM target_metastore.public.tbls 
-        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-    )
-);
-
--- Step 7: Copy partition storage descriptors (sds for partitions)
+-- Step 3: Insert Storage Descriptors (sds)
 INSERT INTO target_metastore.public.sds
 SELECT * FROM source_metastore.public.sds 
 WHERE sd_id IN (
-    SELECT sd_id FROM source_metastore.public.partitions 
-    WHERE tbl_id IN (
-        SELECT tbl_id FROM source_metastore.public.tbls 
-        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-    )
-) 
+    SELECT sd_id FROM source_metastore.public.tbls 
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+)
 AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.sds 
-    WHERE sd_id IN (
-        SELECT sd_id FROM target_metastore.public.partitions 
-        WHERE tbl_id IN (
-            SELECT tbl_id FROM target_metastore.public.tbls 
-            WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
-        )
-    )
+    SELECT 1 FROM target_metastore.public.sds WHERE sd_id = source_metastore.public.sds.sd_id
 );
 
--- Step 8: Copy partition column definitions (columns_v2 for partitions)
+-- Step 4: Insert Tables (tbls)
+INSERT INTO target_metastore.public.tbls 
+SELECT * FROM source_metastore.public.tbls 
+WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+AND NOT EXISTS (
+    SELECT 1 FROM target_metastore.public.tbls WHERE tbl_id = source_metastore.public.tbls.tbl_id
+);
+
+-- Step 5: Insert Columns Metadata (columns_v2)
 INSERT INTO target_metastore.public.columns_v2
-SELECT * FROM source_metastore.public.columns_v2 
+SELECT * FROM source_metastore.public.columns_v2
 WHERE cd_id IN (
-    SELECT cd_id FROM source_metastore.public.sds 
-    WHERE sd_id IN (
-        SELECT sd_id FROM source_metastore.public.partitions 
-        WHERE tbl_id IN (
-            SELECT tbl_id FROM source_metastore.public.tbls 
+    SELECT cd_id FROM source_metastore.public.cds 
+    WHERE cd_id IN (
+        SELECT cd_id FROM source_metastore.public.sds 
+        WHERE sd_id IN (
+            SELECT sd_id FROM source_metastore.public.tbls 
             WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
         )
     )
-) 
+)
 AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.columns_v2 
-    WHERE cd_id IN (
-        SELECT cd_id FROM target_metastore.public.sds 
-        WHERE sd_id IN (
-            SELECT sd_id FROM target_metastore.public
+    SELECT 1 FROM target_metastore.public.columns_v2 WHERE cd_id = source_metastore.public.columns_v2.cd_id
+);
