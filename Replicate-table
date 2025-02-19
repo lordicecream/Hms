@@ -1,103 +1,83 @@
--- Step 1: Ensure the abc schema exists in the target database
-INSERT INTO public.dbs 
-SELECT * FROM public.dbs 
-WHERE name = 'abc' 
-AND NOT EXISTS (
-    SELECT 1 FROM public.dbs WHERE name = 'abc'
-);
+-- Step 1: Ensure `db_id` is available or get a new one
+WITH existing_db AS (
+    SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc'
+),
+new_db AS (
+    SELECT COALESCE((SELECT db_id FROM existing_db), (SELECT MAX(db_id) + 1 FROM target_metastore.public.dbs))
+)
+INSERT INTO target_metastore.public.dbs
+SELECT * FROM source_metastore.public.dbs s, new_db
+WHERE s.name = 'abc'
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.dbs t WHERE t.name = 'abc');
 
--- Step 2: Copy the table `kunal` from the `abc` schema
-INSERT INTO public.tbls 
-SELECT * FROM public.tbls 
-WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc') 
-AND tbl_name = 'kunal'
-AND NOT EXISTS (
-    SELECT 1 FROM public.tbls 
-    WHERE tbl_name = 'kunal' 
-    AND db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
-);
+-- Step 2: Insert `serdes`
+INSERT INTO target_metastore.public.serdes
+SELECT * FROM source_metastore.public.serdes s
+WHERE s.serde_id IN (
+    SELECT DISTINCT serde_id FROM source_metastore.public.sds
+    WHERE sd_id IN (SELECT sd_id FROM source_metastore.public.tbls WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+        AND tbl_name IN ('kunal', 'kunal1', 'kunal2', 'kunal3'))
+)
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.serdes t WHERE t.serde_id = s.serde_id);
 
--- Step 3: Copy the storage descriptor (SDS) for table `kunal`
-INSERT INTO public.sds 
-SELECT * FROM public.sds 
-WHERE sd_id = (SELECT sd_id FROM public.tbls WHERE tbl_name = 'kunal' 
-AND db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc'))
-AND NOT EXISTS (
-    SELECT 1 FROM public.sds WHERE sd_id = public.sds.sd_id
-);
+-- Step 3: Insert `cds`
+INSERT INTO target_metastore.public.cds
+SELECT * FROM source_metastore.public.cds s
+WHERE s.cd_id IN (
+    SELECT DISTINCT cd_id FROM source_metastore.public.sds
+    WHERE sd_id IN (SELECT sd_id FROM source_metastore.public.tbls WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+        AND tbl_name IN ('kunal', 'kunal1', 'kunal2', 'kunal3'))
+)
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.cds t WHERE t.cd_id = s.cd_id);
 
--- Step 4: Copy the column definitions for `kunal`
-INSERT INTO public.columns_v2 
-SELECT * FROM public.columns_v2 
-WHERE cd_id = (SELECT cd_id FROM public.sds 
-               WHERE sd_id = (SELECT sd_id FROM public.tbls 
-                              WHERE tbl_name = 'kunal' 
-                              AND db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')))
-AND NOT EXISTS (
-    SELECT 1 FROM public.columns_v2 WHERE cd_id = public.columns_v2.cd_id
-);
+-- Step 4: Insert `sds`
+INSERT INTO target_metastore.public.sds
+SELECT * FROM source_metastore.public.sds s
+WHERE s.sd_id IN (
+    SELECT DISTINCT sd_id FROM source_metastore.public.tbls
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+    AND tbl_name IN ('kunal', 'kunal1', 'kunal2', 'kunal3')
+)
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.sds t WHERE t.sd_id = s.sd_id);
 
--- Step 5: Copy partition keys if `kunal` is a partitioned table
-INSERT INTO public.partition_keys 
-SELECT * FROM public.partition_keys 
-WHERE tbl_id = (SELECT tbl_id FROM public.tbls 
-                WHERE tbl_name = 'kunal' 
-                AND db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc'))
-AND NOT EXISTS (
-    SELECT 1 FROM public.partition_keys WHERE tbl_id = public.partition_keys.tbl_id
-);
+-- Step 5: Insert `tbls`
+INSERT INTO target_metastore.public.tbls
+SELECT * FROM source_metastore.public.tbls s
+WHERE s.db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+AND s.tbl_name IN ('kunal', 'kunal1', 'kunal2', 'kunal3')
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.tbls t WHERE t.tbl_id = s.tbl_id);
 
--- Step 6: Copy partition metadata if `kunal` is partitioned
-INSERT INTO public.partitions 
-SELECT * FROM public.partitions 
-WHERE tbl_id = (SELECT tbl_id FROM public.tbls 
-                WHERE tbl_name = 'kunal' 
-                AND db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc'))
-AND NOT EXISTS (
-    SELECT 1 FROM public.partitions WHERE part_id = public.partitions.part_id
-);
+-- Step 6: Insert `columns_v2`
+INSERT INTO target_metastore.public.columns_v2
+SELECT * FROM source_metastore.public.columns_v2 s
+WHERE s.cd_id IN (SELECT cd_id FROM target_metastore.public.cds WHERE cd_id IN (SELECT cd_id FROM target_metastore.public.sds WHERE sd_id IN (SELECT sd_id FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+    AND tbl_name IN ('kunal', 'kunal1', 'kunal2', 'kunal3'))))
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.columns_v2 t WHERE t.cd_id = s.cd_id AND t.column_name = s.column_name);
 
--- Step 7: Copy storage descriptors (SDS) for partitions if `kunal` is partitioned
-INSERT INTO public.sds 
-SELECT * FROM public.sds 
-WHERE sd_id IN (
-    SELECT sd_id FROM public.partitions 
-    WHERE tbl_id = (SELECT tbl_id FROM public.tbls 
-                    WHERE tbl_name = 'kunal' 
-                    AND db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc'))
-) 
-AND NOT EXISTS (
-    SELECT 1 FROM public.sds WHERE sd_id = public.sds.sd_id
-);
+-- Step 7: Insert `partitions`
+INSERT INTO target_metastore.public.partitions
+SELECT * FROM source_metastore.public.partitions s
+WHERE s.tbl_id IN (SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+AND tbl_name IN ('kunal', 'kunal1', 'kunal2', 'kunal3'))
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.partitions p WHERE p.part_id = s.part_id);
 
--- Step 8: Copy column definitions for partition storage if `kunal` is partitioned
-INSERT INTO public.columns_v2 
-SELECT * FROM public.columns_v2 
-WHERE cd_id IN (
-    SELECT cd_id FROM public.sds 
-    WHERE sd_id IN (
-        SELECT sd_id FROM public.partitions 
-        WHERE tbl_id = (SELECT tbl_id FROM public.tbls 
-                        WHERE tbl_name = 'kunal' 
-                        AND db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc'))
-    )
-) 
-AND NOT EXISTS (
-    SELECT 1 FROM public.columns_v2 WHERE cd_id = public.columns_v2.cd_id
-);
+-- Step 8: Insert `partition_keys`
+INSERT INTO target_metastore.public.partition_keys
+SELECT * FROM source_metastore.public.partition_keys s
+WHERE s.tbl_id IN (SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+AND tbl_name IN ('kunal', 'kunal1', 'kunal2', 'kunal3'))
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.partition_keys t WHERE t.tbl_id = s.tbl_id AND t.pkey_name = s.pkey_name);
 
--- Final Validation Queries
+-- Step 9: Insert `partition_params`
+INSERT INTO target_metastore.public.partition_params
+SELECT * FROM source_metastore.public.partition_params s
+WHERE s.part_id IN (SELECT part_id FROM target_metastore.public.partitions WHERE tbl_id IN (SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+AND tbl_name IN ('kunal', 'kunal1', 'kunal2', 'kunal3')))
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.partition_params t WHERE t.part_id = s.part_id AND t.param_key = s.param_key);
 
--- Validate abc schema exists in target
-SELECT * FROM public.dbs WHERE name = 'abc';
-
--- Validate the table `kunal` exists in target
-SELECT * FROM public.tbls 
-WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc') 
-AND tbl_name = 'kunal';
-
--- Validate partitions exist if applicable
-SELECT * FROM public.partitions 
-WHERE tbl_id = (SELECT tbl_id FROM public.tbls 
-                WHERE tbl_name = 'kunal' 
-                AND db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc'));
+-- Step 10: Insert `table_params`
+INSERT INTO target_metastore.public.table_params
+SELECT * FROM source_metastore.public.table_params s
+WHERE s.tbl_id IN (SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+AND tbl_name IN ('kunal', 'kunal1', 'kunal2', 'kunal3'))
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.table_params t WHERE t.tbl_id = s.tbl_id AND t.param_key = s.param_key);
