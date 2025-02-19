@@ -1,117 +1,111 @@
--- Stage 1: Copy the `abc` schema metadata into the target database
-INSERT INTO public.dbs 
-SELECT * FROM public.dbs 
+-- Step 1: Ensure the abc schema exists in the target metastore
+INSERT INTO target_metastore.public.dbs 
+SELECT * FROM source_metastore.public.dbs 
 WHERE name = 'abc' 
 AND NOT EXISTS (
-    SELECT 1 FROM public.dbs WHERE name = 'abc'
+    SELECT 1 FROM target_metastore.public.dbs WHERE name = 'abc'
 );
 
--- Stage 2: Copy all tables belonging to the "abc" schema
-INSERT INTO public.tbls 
-SELECT * FROM public.tbls 
-WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc') 
+-- Step 2: Copy all tables in abc schema
+INSERT INTO target_metastore.public.tbls 
+SELECT * FROM source_metastore.public.tbls 
+WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc') 
 AND NOT EXISTS (
-    SELECT 1 FROM public.tbls 
-    WHERE tbl_name = public.tbls.tbl_name 
-    AND db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+    SELECT 1 FROM target_metastore.public.tbls 
+    WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
 );
 
--- Stage 3: Copy storage descriptors (SDS) for tables in "abc" schema
-INSERT INTO public.sds 
-SELECT * FROM public.sds 
+-- Step 3: Copy all storage descriptors (SDS) for tables in abc schema
+INSERT INTO target_metastore.public.sds 
+SELECT * FROM source_metastore.public.sds 
 WHERE sd_id IN (
-    SELECT sd_id FROM public.tbls 
-    WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+    SELECT sd_id FROM source_metastore.public.tbls 
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
 ) 
 AND NOT EXISTS (
-    SELECT 1 FROM public.sds 
-    WHERE sd_id = public.sds.sd_id
+    SELECT 1 FROM target_metastore.public.sds 
+    WHERE sd_id IN (
+        SELECT sd_id FROM target_metastore.public.tbls 
+        WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+    )
 );
 
--- Stage 4: Copy column definitions (COLUMNS_V2) for tables in "abc" schema
-INSERT INTO public.columns_v2 
-SELECT * FROM public.columns_v2 
+-- Step 4: Copy all column definitions (columns_v2) for tables in abc schema
+INSERT INTO target_metastore.public.columns_v2 
+SELECT * FROM source_metastore.public.columns_v2 
 WHERE cd_id IN (
-    SELECT cd_id FROM public.sds 
+    SELECT cd_id FROM source_metastore.public.sds 
     WHERE sd_id IN (
-        SELECT sd_id FROM public.tbls 
-        WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+        SELECT sd_id FROM source_metastore.public.tbls 
+        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
     )
 ) 
 AND NOT EXISTS (
-    SELECT 1 FROM public.columns_v2 
-    WHERE cd_id = public.columns_v2.cd_id
-);
-
--- Stage 5: Copy partition keys for partitioned tables
-INSERT INTO public.partition_keys 
-SELECT * FROM public.partition_keys 
-WHERE tbl_id IN (
-    SELECT tbl_id FROM public.tbls 
-    WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
-) 
-AND NOT EXISTS (
-    SELECT 1 FROM public.partition_keys 
-    WHERE tbl_id = public.partition_keys.tbl_id
-);
-
--- Stage 6: Copy partition metadata
-INSERT INTO public.partitions 
-SELECT * FROM public.partitions 
-WHERE tbl_id IN (
-    SELECT tbl_id FROM public.tbls 
-    WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
-) 
-AND NOT EXISTS (
-    SELECT 1 FROM public.partitions 
-    WHERE part_id = public.partitions.part_id
-);
-
--- Stage 7: Copy storage descriptors (SDS) for partitions
-INSERT INTO public.sds 
-SELECT * FROM public.sds 
-WHERE sd_id IN (
-    SELECT sd_id FROM public.partitions 
-    WHERE tbl_id IN (
-        SELECT tbl_id FROM public.tbls 
-        WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
-    )
-) 
-AND NOT EXISTS (
-    SELECT 1 FROM public.sds 
-    WHERE sd_id = public.sds.sd_id
-);
-
--- Stage 8: Copy column definitions for partition storage
-INSERT INTO public.columns_v2 
-SELECT * FROM public.columns_v2 
-WHERE cd_id IN (
-    SELECT cd_id FROM public.sds 
-    WHERE sd_id IN (
-        SELECT sd_id FROM public.partitions 
-        WHERE tbl_id IN (
-            SELECT tbl_id FROM public.tbls 
-            WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+    SELECT 1 FROM target_metastore.public.columns_v2 
+    WHERE cd_id IN (
+        SELECT cd_id FROM target_metastore.public.sds 
+        WHERE sd_id IN (
+            SELECT sd_id FROM target_metastore.public.tbls 
+            WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
         )
     )
+);
+
+-- Step 5: Copy partition keys for partitioned tables in abc schema
+INSERT INTO target_metastore.public.partition_keys 
+SELECT * FROM source_metastore.public.partition_keys 
+WHERE tbl_id IN (
+    SELECT tbl_id FROM source_metastore.public.tbls 
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
 ) 
 AND NOT EXISTS (
-    SELECT 1 FROM public.columns_v2 
-    WHERE cd_id = public.columns_v2.cd_id
+    SELECT 1 FROM target_metastore.public.partition_keys 
+    WHERE tbl_id IN (
+        SELECT tbl_id FROM target_metastore.public.tbls 
+        WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+    )
 );
 
--- Final Validation Queries
-
--- Validate schema exists in target
-SELECT * FROM public.dbs WHERE name = 'abc';
-
--- Validate tables exist in target
-SELECT * FROM public.tbls 
-WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc');
-
--- Validate partitions exist
-SELECT * FROM public.partitions 
+-- Step 6: Copy partitions for partitioned tables in abc schema
+INSERT INTO target_metastore.public.partitions 
+SELECT * FROM source_metastore.public.partitions 
 WHERE tbl_id IN (
-    SELECT tbl_id FROM public.tbls 
-    WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+    SELECT tbl_id FROM source_metastore.public.tbls 
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+) 
+AND NOT EXISTS (
+    SELECT 1 FROM target_metastore.public.partitions 
+    WHERE tbl_id IN (
+        SELECT tbl_id FROM target_metastore.public.tbls 
+        WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+    )
 );
+
+-- Step 7: Copy SDS for partitions
+INSERT INTO target_metastore.public.sds 
+SELECT * FROM source_metastore.public.sds 
+WHERE sd_id IN (
+    SELECT sd_id FROM source_metastore.public.partitions 
+    WHERE tbl_id IN (
+        SELECT tbl_id FROM source_metastore.public.tbls 
+        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+    )
+) 
+AND NOT EXISTS (
+    SELECT 1 FROM target_metastore.public.sds 
+    WHERE sd_id IN (
+        SELECT sd_id FROM target_metastore.public.partitions 
+        WHERE tbl_id IN (
+            SELECT tbl_id FROM target_metastore.public.tbls 
+            WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+        )
+    )
+);
+
+-- Step 8: Copy column definitions for partitions
+INSERT INTO target_metastore.public.columns_v2 
+SELECT * FROM source_metastore.public.columns_v2 
+WHERE cd_id IN (
+    SELECT cd_id FROM source_metastore.public.sds 
+    WHERE sd_id IN (
+        SELECT sd_id FROM source_metastore.public.partitions
