@@ -1,0 +1,44 @@
+-- Step 1: Get the Next Available db_id in target_metastore
+WITH next_db_id AS (
+    SELECT COALESCE(MAX(db_id), 0) + 1 AS new_db_id 
+    FROM target_metastore.public.dbs
+)
+SELECT new_db_id FROM next_db_id;
+
+-- Step 2: Insert abc Schema with a Unique db_id
+WITH next_db_id AS (
+    SELECT COALESCE(MAX(db_id), 0) + 1 AS new_db_id 
+    FROM target_metastore.public.dbs
+)
+INSERT INTO target_metastore.public.dbs (db_id, name, description, location_uri, owner_name, owner_type, ctlg_name)
+SELECT 
+    (SELECT new_db_id FROM next_db_id), 
+    name, description, location_uri, owner_name, owner_type, ctlg_name 
+FROM source_metastore.public.dbs 
+WHERE name = 'abc'
+AND NOT EXISTS (
+    SELECT 1 FROM target_metastore.public.dbs WHERE name = 'abc'
+)
+RETURNING db_id;
+
+-- Step 3: Insert Tables from abc Schema with the New db_id
+WITH next_db_id AS (
+    SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc'
+)
+INSERT INTO target_metastore.public.tbls 
+SELECT 
+    tbl_id, (SELECT db_id FROM next_db_id), tbl_name, sd_id, tbl_type, view_expanded_text, 
+    view_original_text, create_time, last_access_time, retention, tbl_comment, owner 
+FROM source_metastore.public.tbls 
+WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+AND NOT EXISTS (
+    SELECT 1 FROM target_metastore.public.tbls 
+    WHERE tbl_name = source_metastore.public.tbls.tbl_name
+    AND db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+);
+
+-- Step 4: Copy sds (Storage Descriptors)
+INSERT INTO target_metastore.public.sds
+SELECT * FROM source_metastore.public.sds 
+WHERE sd_id IN (
+    SELECT
