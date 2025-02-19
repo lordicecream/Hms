@@ -1,0 +1,65 @@
+-- 🔹 Step 1: Identify the db_id of Schema `abc`
+SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc';
+
+-- 🛑 Replace `<db_id>` in the queries below with the actual db_id from the previous query
+
+-- 🗑 Step 2: Delete Data in Reverse Order to Maintain Integrity
+
+-- 1️⃣ Delete from partition_params
+DELETE FROM target_metastore.public.partition_params
+WHERE part_id IN (
+    SELECT part_id FROM target_metastore.public.partitions 
+    WHERE tbl_id IN (SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = <db_id>)
+);
+
+-- 2️⃣ Delete from partition_keys
+DELETE FROM target_metastore.public.partition_keys
+WHERE tbl_id IN (SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = <db_id>);
+
+-- 3️⃣ Delete from partitions
+DELETE FROM target_metastore.public.partitions
+WHERE tbl_id IN (SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = <db_id>);
+
+-- 4️⃣ Delete from table_params
+DELETE FROM target_metastore.public.table_params
+WHERE tbl_id IN (SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = <db_id>);
+
+-- 5️⃣ Delete from columns_v2
+DELETE FROM target_metastore.public.columns_v2
+WHERE cd_id IN (
+    SELECT cd_id FROM target_metastore.public.cds 
+    WHERE cd_id IN (SELECT cd_id FROM target_metastore.public.sds WHERE sd_id IN (
+        SELECT sd_id FROM target_metastore.public.tbls WHERE db_id = <db_id>
+    ))
+);
+
+-- 6️⃣ Delete from tbls (tables)
+DELETE FROM target_metastore.public.tbls
+WHERE db_id = <db_id>;
+
+-- 7️⃣ Delete from sds (storage descriptors)
+DELETE FROM target_metastore.public.sds
+WHERE sd_id IN (
+    SELECT sd_id FROM target_metastore.public.tbls WHERE db_id = <db_id>
+);
+
+-- 8️⃣ Delete from cds (columns descriptors)
+DELETE FROM target_metastore.public.cds
+WHERE cd_id IN (
+    SELECT cd_id FROM target_metastore.public.sds WHERE sd_id IN (
+        SELECT sd_id FROM target_metastore.public.tbls WHERE db_id = <db_id>
+    )
+);
+
+-- 9️⃣ Delete from serdes
+DELETE FROM target_metastore.public.serdes
+WHERE serde_id IN (
+    SELECT DISTINCT serde_id FROM target_metastore.public.sds
+    WHERE sd_id IN (SELECT sd_id FROM target_metastore.public.tbls WHERE db_id = <db_id>)
+);
+
+-- 🔟 Delete from dbs (finally, delete the schema itself)
+DELETE FROM target_metastore.public.dbs
+WHERE db_id = <db_id>;
+
+-- ✅ Schema `abc` is now fully removed!
