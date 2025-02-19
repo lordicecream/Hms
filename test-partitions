@@ -1,0 +1,22 @@
+WITH tbl_mapping AS (
+    SELECT 
+        s.tbl_id AS source_tbl_id, 
+        t.tbl_id AS target_tbl_id
+    FROM source_metastore.public.tbls s
+    JOIN target_metastore.public.tbls t
+    ON s.tbl_name = t.tbl_name
+    WHERE s.db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+      AND t.db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+)
+INSERT INTO target_metastore.public.partitions
+SELECT 
+    p.part_id, 
+    tm.target_tbl_id AS tbl_id, 
+    p.create_time, 
+    p.last_access_time, 
+    p.sd_id
+FROM source_metastore.public.partitions p
+JOIN tbl_mapping tm ON p.tbl_id = tm.source_tbl_id
+WHERE NOT EXISTS (
+    SELECT 1 FROM target_metastore.public.partitions t WHERE t.part_id = p.part_id
+);
