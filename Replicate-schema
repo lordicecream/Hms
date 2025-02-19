@@ -1,12 +1,19 @@
--- Step 1: Insert abc Schema Without db_id Check
-INSERT INTO target_metastore.public.dbs 
-SELECT * FROM source_metastore.public.dbs 
-WHERE name = 'abc'
-AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.dbs WHERE name = 'abc'
+-- 1️⃣ Copy `dbs` (Schema Information)
+INSERT INTO target_metastore.public.dbs
+SELECT * FROM source_metastore.public.dbs WHERE name = 'abc';
+
+-- 2️⃣ Copy `serdes` (Serialization Descriptors) 
+INSERT INTO target_metastore.public.serdes
+SELECT * FROM source_metastore.public.serdes
+WHERE serde_id IN (
+    SELECT serde_id FROM source_metastore.public.sds 
+    WHERE sd_id IN (
+        SELECT sd_id FROM source_metastore.public.tbls 
+        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+    )
 );
 
--- Step 2: Insert Column Descriptors (cds)
+-- 3️⃣ Copy `cds` (Column Descriptors)
 INSERT INTO target_metastore.public.cds
 SELECT * FROM source_metastore.public.cds
 WHERE cd_id IN (
@@ -15,43 +22,58 @@ WHERE cd_id IN (
         SELECT sd_id FROM source_metastore.public.tbls 
         WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
     )
-)
-AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.cds WHERE cd_id = source_metastore.public.cds.cd_id
 );
 
--- Step 3: Insert Storage Descriptors (sds)
+-- 4️⃣ Copy `sds` (Storage Descriptors)
 INSERT INTO target_metastore.public.sds
-SELECT * FROM source_metastore.public.sds 
+SELECT * FROM source_metastore.public.sds
 WHERE sd_id IN (
     SELECT sd_id FROM source_metastore.public.tbls 
     WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-)
-AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.sds WHERE sd_id = source_metastore.public.sds.sd_id
 );
 
--- Step 4: Insert Tables (tbls)
-INSERT INTO target_metastore.public.tbls 
-SELECT * FROM source_metastore.public.tbls 
-WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.tbls WHERE tbl_id = source_metastore.public.tbls.tbl_id
-);
+-- 5️⃣ Copy `tbls` (Tables)
+INSERT INTO target_metastore.public.tbls
+SELECT * FROM source_metastore.public.tbls
+WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc');
 
--- Step 5: Insert Columns Metadata (columns_v2)
+-- 6️⃣ Copy `columns_v2` (Column Details)
 INSERT INTO target_metastore.public.columns_v2
 SELECT * FROM source_metastore.public.columns_v2
 WHERE cd_id IN (
-    SELECT cd_id FROM source_metastore.public.cds 
+    SELECT cd_id FROM source_metastore.public.cds
     WHERE cd_id IN (
-        SELECT cd_id FROM source_metastore.public.sds 
+        SELECT cd_id FROM source_metastore.public.sds
         WHERE sd_id IN (
             SELECT sd_id FROM source_metastore.public.tbls 
             WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
         )
     )
-)
-AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.columns_v2 WHERE cd_id = source_metastore.public.columns_v2.cd_id
+);
+
+-- 7️⃣ Copy `partition_keys` (Partition Keys for Tables)
+INSERT INTO target_metastore.public.partition_keys
+SELECT * FROM source_metastore.public.partition_keys
+WHERE tbl_id IN (
+    SELECT tbl_id FROM source_metastore.public.tbls
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+);
+
+-- 8️⃣ Copy `partitions` (Partitions)
+INSERT INTO target_metastore.public.partitions
+SELECT * FROM source_metastore.public.partitions
+WHERE tbl_id IN (
+    SELECT tbl_id FROM source_metastore.public.tbls
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+);
+
+-- 9️⃣ Copy `partition_params` (Partition Parameters)
+INSERT INTO target_metastore.public.partition_params
+SELECT * FROM source_metastore.public.partition_params
+WHERE part_id IN (
+    SELECT part_id FROM source_metastore.public.partitions
+    WHERE tbl_id IN (
+        SELECT tbl_id FROM source_metastore.public.tbls
+        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+    )
 );
