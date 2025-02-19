@@ -1,0 +1,116 @@
+-- replicate_hive_metastore.sql
+-- Run in the following order via Trino/Superset.
+-- Replace 'abc' with your database name.
+
+-- ----------------------------------------------------------------------
+-- Step 1: Replicate Core Metadata (DBS, SDS, TBL)
+-- ----------------------------------------------------------------------
+
+-- 1a. Insert DBS (databases)
+INSERT INTO target_metastore.public.dbs (
+  db_id, name, db_location_uri, owner_name, owner_type
+)
+SELECT 
+  db_id, name, db_location_uri, owner_name, owner_type 
+FROM source_metastore.public.dbs 
+WHERE name = 'abc'
+AND NOT EXISTS (
+  SELECT 1 FROM target_metastore.public.dbs WHERE name = 'abc'
+);
+
+-- 1b. Insert SDS (storage descriptors)
+INSERT INTO target_metastore.public.sds (
+  sd_id, cd_id, input_format, output_format, location, is_compacted
+)
+SELECT 
+  sd_id, cd_id, input_format, output_format, location, is_compacted 
+FROM source_metastore.public.sds 
+WHERE sd_id IN (
+  SELECT DISTINCT sd_id 
+  FROM source_metastore.public.tbls 
+  WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+AND NOT EXISTS (
+  SELECT 1 FROM target_metastore.public.sds WHERE sd_id = s.sd_id
+);
+
+-- 1c. Insert TBL (tables)
+INSERT INTO target_metastore.public.tbls (
+  tbl_id, tbl_name, db_id, sd_id, tbl_type, owner
+)
+SELECT 
+  tbl_id, tbl_name, db_id, sd_id, tbl_type, owner 
+FROM source_metastore.public.tbls 
+WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+AND NOT EXISTS (
+  SELECT 1 FROM target_metastore.public.tbls WHERE tbl_id = t.tbl_id
+);
+
+
+-- ----------------------------------------------------------------------
+-- Step 2: Replicate Partitions & Dependencies
+-- ----------------------------------------------------------------------
+
+-- 2a. Insert PARTITIONS
+INSERT INTO target_metastore.public.partitions (
+  part_id, part_name, tbl_id, sd_id, create_time, last_access_time
+)
+SELECT 
+  part_id, part_name, tbl_id, sd_id, create_time, last_access_time 
+FROM source_metastore.public.partitions 
+WHERE tbl_id IN (
+  SELECT tbl_id 
+  FROM target_metastore.public.tbls 
+  WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+)
+AND sd_id IN (SELECT sd_id FROM target_metastore.public.sds)
+AND NOT EXISTS (
+  SELECT 1 
+  FROM target_metastore.public.partitions 
+  WHERE part_id = p.part_id
+);
+
+-- 2b. Insert PARTITION_KEYS
+INSERT INTO target_metastore.public.partition_keys (
+  tbl_id, pkey_name, pkey_type, integer_idx
+)
+SELECT 
+  tbl_id, pkey_name, pkey_type, integer_idx 
+FROM source_metastore.public.partition_keys 
+WHERE tbl_id IN (
+  SELECT tbl_id FROM target_metastore.public.tbls 
+  WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+);
+
+-- 2c. Insert PARTITION_PARAMS
+INSERT INTO target_metastore.public.partition_params (
+  part_id, param_key, param_value
+)
+SELECT 
+  part_id, param_key, param_value 
+FROM source_metastore.public.partition_params 
+WHERE part_id IN (
+  SELECT part_id FROM target_metastore.public.partitions
+);
+
+
+-- ----------------------------------------------------------------------
+-- Step 3: Validate Replication (Optional)
+-- ----------------------------------------------------------------------
+
+-- 3a. Validate DBS
+SELECT COUNT(*) AS target_dbs_count 
+FROM target_metastore.public.dbs 
+WHERE name = 'abc';
+
+-- 3b. Validate TBL
+SELECT COUNT(*) AS target_tbls_count 
+FROM target_metastore.public.tbls 
+WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc');
+
+-- 3c. Validate PARTITIONS
+SELECT COUNT(*) AS target_partitions_count 
+FROM target_metastore.public.partitions 
+WHERE tbl_id IN (
+  SELECT tbl_id FROM target_metastore.public.tbls 
+  WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+);
