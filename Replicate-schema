@@ -1,22 +1,25 @@
--- Step 1: Ensure the abc schema exists in the target metastore
-INSERT INTO target_metastore.public.dbs 
+-- Step 1: Copy schema (dbs table)
+INSERT INTO target_metastore.public.dbs
 SELECT * FROM source_metastore.public.dbs 
 WHERE name = 'abc' 
 AND NOT EXISTS (
     SELECT 1 FROM target_metastore.public.dbs WHERE name = 'abc'
 );
 
--- Step 2: Copy all tables in abc schema
-INSERT INTO target_metastore.public.tbls 
+-- Step 2: Copy tables for abc schema
+INSERT INTO target_metastore.public.tbls
 SELECT * FROM source_metastore.public.tbls 
-WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc') 
+WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
 AND NOT EXISTS (
     SELECT 1 FROM target_metastore.public.tbls 
-    WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+    WHERE tbl_id IN (
+        SELECT tbl_id FROM source_metastore.public.tbls 
+        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+    )
 );
 
--- Step 3: Copy all storage descriptors (SDS) for tables in abc schema
-INSERT INTO target_metastore.public.sds 
+-- Step 3: Copy storage descriptors (sds table)
+INSERT INTO target_metastore.public.sds
 SELECT * FROM source_metastore.public.sds 
 WHERE sd_id IN (
     SELECT sd_id FROM source_metastore.public.tbls 
@@ -30,8 +33,8 @@ AND NOT EXISTS (
     )
 );
 
--- Step 4: Copy all column definitions (columns_v2) for tables in abc schema
-INSERT INTO target_metastore.public.columns_v2 
+-- Step 4: Copy column definitions (columns_v2 table)
+INSERT INTO target_metastore.public.columns_v2
 SELECT * FROM source_metastore.public.columns_v2 
 WHERE cd_id IN (
     SELECT cd_id FROM source_metastore.public.sds 
@@ -51,8 +54,8 @@ AND NOT EXISTS (
     )
 );
 
--- Step 5: Copy partition keys for partitioned tables in abc schema
-INSERT INTO target_metastore.public.partition_keys 
+-- Step 5: Copy partition keys
+INSERT INTO target_metastore.public.partition_keys
 SELECT * FROM source_metastore.public.partition_keys 
 WHERE tbl_id IN (
     SELECT tbl_id FROM source_metastore.public.tbls 
@@ -66,8 +69,8 @@ AND NOT EXISTS (
     )
 );
 
--- Step 6: Copy partitions for partitioned tables in abc schema
-INSERT INTO target_metastore.public.partitions 
+-- Step 6: Copy partitions
+INSERT INTO target_metastore.public.partitions
 SELECT * FROM source_metastore.public.partitions 
 WHERE tbl_id IN (
     SELECT tbl_id FROM source_metastore.public.tbls 
@@ -77,12 +80,12 @@ AND NOT EXISTS (
     SELECT 1 FROM target_metastore.public.partitions 
     WHERE tbl_id IN (
         SELECT tbl_id FROM target_metastore.public.tbls 
-        WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
     )
 );
 
--- Step 7: Copy SDS for partitions
-INSERT INTO target_metastore.public.sds 
+-- Step 7: Copy partition storage descriptors (sds for partitions)
+INSERT INTO target_metastore.public.sds
 SELECT * FROM source_metastore.public.sds 
 WHERE sd_id IN (
     SELECT sd_id FROM source_metastore.public.partitions 
@@ -102,10 +105,22 @@ AND NOT EXISTS (
     )
 );
 
--- Step 8: Copy column definitions for partitions
-INSERT INTO target_metastore.public.columns_v2 
+-- Step 8: Copy partition column definitions (columns_v2 for partitions)
+INSERT INTO target_metastore.public.columns_v2
 SELECT * FROM source_metastore.public.columns_v2 
 WHERE cd_id IN (
     SELECT cd_id FROM source_metastore.public.sds 
     WHERE sd_id IN (
-        SELECT sd_id FROM source_metastore.public.partitions
+        SELECT sd_id FROM source_metastore.public.partitions 
+        WHERE tbl_id IN (
+            SELECT tbl_id FROM source_metastore.public.tbls 
+            WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+        )
+    )
+) 
+AND NOT EXISTS (
+    SELECT 1 FROM target_metastore.public.columns_v2 
+    WHERE cd_id IN (
+        SELECT cd_id FROM target_metastore.public.sds 
+        WHERE sd_id IN (
+            SELECT sd_id FROM target_metastore.public
