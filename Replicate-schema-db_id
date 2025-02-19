@@ -21,24 +21,57 @@ AND NOT EXISTS (
 )
 RETURNING db_id;
 
--- Step 3: Insert Tables from abc Schema with the New db_id
+-- Step 3: Insert Column Descriptors (cds)
+INSERT INTO target_metastore.public.cds
+SELECT * FROM source_metastore.public.cds
+WHERE cd_id IN (
+    SELECT cd_id FROM source_metastore.public.sds 
+    WHERE sd_id IN (
+        SELECT sd_id FROM source_metastore.public.tbls 
+        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+    )
+)
+AND NOT EXISTS (
+    SELECT 1 FROM target_metastore.public.cds WHERE cd_id = source_metastore.public.cds.cd_id
+);
+
+-- Step 4: Insert Storage Descriptors (sds)
+INSERT INTO target_metastore.public.sds
+SELECT * FROM source_metastore.public.sds 
+WHERE sd_id IN (
+    SELECT sd_id FROM source_metastore.public.tbls 
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+)
+AND NOT EXISTS (
+    SELECT 1 FROM target_metastore.public.sds WHERE sd_id = source_metastore.public.sds.sd_id
+);
+
+-- Step 5: Insert Tables (tbls)
 WITH next_db_id AS (
     SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc'
 )
 INSERT INTO target_metastore.public.tbls 
 SELECT 
-    tbl_id, (SELECT db_id FROM next_db_id), tbl_name, sd_id, tbl_type, view_expanded_text, 
-    view_original_text, create_time, last_access_time, retention, tbl_comment, owner 
+    tbl_id, (SELECT db_id FROM next_db_id), tbl_name, sd_id, tbl_type, view_expanded_text, view_original_text
 FROM source_metastore.public.tbls 
 WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
 AND NOT EXISTS (
-    SELECT 1 FROM target_metastore.public.tbls 
-    WHERE tbl_name = source_metastore.public.tbls.tbl_name
-    AND db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+    SELECT 1 FROM target_metastore.public.tbls WHERE tbl_id = source_metastore.public.tbls.tbl_id
 );
 
--- Step 4: Copy sds (Storage Descriptors)
-INSERT INTO target_metastore.public.sds
-SELECT * FROM source_metastore.public.sds 
-WHERE sd_id IN (
-    SELECT
+-- Step 6: Insert Columns Metadata (columns_v2)
+INSERT INTO target_metastore.public.columns_v2
+SELECT * FROM source_metastore.public.columns_v2
+WHERE cd_id IN (
+    SELECT cd_id FROM source_metastore.public.cds 
+    WHERE cd_id IN (
+        SELECT cd_id FROM source_metastore.public.sds 
+        WHERE sd_id IN (
+            SELECT sd_id FROM source_metastore.public.tbls 
+            WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+        )
+    )
+)
+AND NOT EXISTS (
+    SELECT 1 FROM target_metastore.public.columns_v2 WHERE cd_id = source_metastore.public.columns_v2.cd_id
+);
