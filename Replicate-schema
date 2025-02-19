@@ -1,89 +1,85 @@
--- 1️⃣ Copy `dbs` (Schema Information)
-INSERT INTO target_metastore.public.dbs
-SELECT * FROM source_metastore.public.dbs WHERE name = 'abc';
+-- Step 1: Ensure `db_id` is available or get a new one
+WITH existing_db AS (
+    SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc'
+),
+new_db AS (
+    SELECT COALESCE((SELECT db_id FROM existing_db), (SELECT MAX(db_id) + 1 FROM target_metastore.public.dbs))
+)
+INSERT INTO target_metastore.public.dbs (db_id, name, description, location_uri, parameters, owner_name, owner_type, ctlg_name)
+SELECT new_db.db_id, s.name, s.description, s.location_uri, s.parameters, s.owner_name, s.owner_type, s.ctlg_name
+FROM source_metastore.public.dbs s, new_db
+WHERE s.name = 'abc'
+ON CONFLICT (db_id) DO NOTHING;
 
--- 2️⃣ Copy `serdes` (Serialization Descriptors)
-INSERT INTO target_metastore.public.serdes
-SELECT * FROM source_metastore.public.serdes
-WHERE serde_id IN (
-    SELECT serde_id FROM source_metastore.public.sds 
-    WHERE sd_id IN (
-        SELECT sd_id FROM source_metastore.public.tbls 
-        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-    )
-);
+-- Step 2: Insert `serdes` (to prevent `serde_id` foreign key errors)
+INSERT INTO target_metastore.public.serdes (serde_id, name, slib, parameters)
+SELECT s.serde_id, s.name, s.slib, s.parameters
+FROM source_metastore.public.serdes s
+WHERE s.serde_id IN (
+    SELECT DISTINCT serde_id FROM source_metastore.public.sds
+    WHERE sd_id IN (SELECT sd_id FROM source_metastore.public.tbls WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc'))
+)
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.serdes t WHERE t.serde_id = s.serde_id);
 
--- 3️⃣ Copy `cds` (Column Descriptors)
-INSERT INTO target_metastore.public.cds
-SELECT * FROM source_metastore.public.cds
-WHERE cd_id IN (
-    SELECT cd_id FROM source_metastore.public.sds 
-    WHERE sd_id IN (
-        SELECT sd_id FROM source_metastore.public.tbls 
-        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-    )
-);
+-- Step 3: Insert `cds` (column descriptors to prevent `cd_id` errors)
+INSERT INTO target_metastore.public.cds (cd_id, column_name, type_name, comment)
+SELECT s.cd_id, s.column_name, s.type_name, s.comment
+FROM source_metastore.public.cds s
+WHERE s.cd_id IN (
+    SELECT DISTINCT cd_id FROM source_metastore.public.sds
+    WHERE sd_id IN (SELECT sd_id FROM source_metastore.public.tbls WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc'))
+)
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.cds t WHERE t.cd_id = s.cd_id);
 
--- 4️⃣ Copy `sds` (Storage Descriptors for Tables + Partitions)
-INSERT INTO target_metastore.public.sds
-SELECT * FROM source_metastore.public.sds
-WHERE sd_id IN (
-    -- Get SDs for Tables
-    SELECT sd_id FROM source_metastore.public.tbls 
+-- Step 4: Insert `sds` (storage descriptors, fixing `serde_id` and `cd_id` dependencies)
+INSERT INTO target_metastore.public.sds (sd_id, cd_id, serde_id, input_format, output_format, is_compressed, num_buckets, serde_info)
+SELECT s.sd_id, s.cd_id, s.serde_id, s.input_format, s.output_format, s.is_compressed, s.num_buckets, s.serde_info
+FROM source_metastore.public.sds s
+WHERE s.sd_id IN (
+    SELECT DISTINCT sd_id FROM source_metastore.public.tbls
     WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+)
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.sds t WHERE t.sd_id = s.sd_id);
 
-    UNION 
+-- Step 5: Insert `tbls` (tables in `abc` schema, referencing `sds`)
+INSERT INTO target_metastore.public.tbls (tbl_id, db_id, tbl_name, sd_id, tbl_type, create_time, last_access_time, retention, view_expanded_text, view_original_text, parameters)
+SELECT s.tbl_id, (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc'), s.tbl_name, s.sd_id, s.tbl_type, s.create_time, s.last_access_time, s.retention, s.view_expanded_text, s.view_original_text, s.parameters
+FROM source_metastore.public.tbls s
+WHERE s.db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.tbls t WHERE t.tbl_id = s.tbl_id);
 
-    -- Get SDs for Partitions
-    SELECT sd_id FROM source_metastore.public.partitions
-    WHERE tbl_id IN (
-        SELECT tbl_id FROM source_metastore.public.tbls 
-        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-    )
-);
+-- Step 6: Insert `columns_v2` (table column details)
+INSERT INTO target_metastore.public.columns_v2 (cd_id, column_name, type_name, comment)
+SELECT s.cd_id, s.column_name, s.type_name, s.comment
+FROM source_metastore.public.columns_v2 s
+WHERE s.cd_id IN (SELECT cd_id FROM target_metastore.public.cds WHERE cd_id IN (SELECT cd_id FROM target_metastore.public.sds WHERE sd_id IN (SELECT sd_id FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc'))))
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.columns_v2 t WHERE t.cd_id = s.cd_id AND t.column_name = s.column_name);
 
--- 5️⃣ Copy `tbls` (Tables)
-INSERT INTO target_metastore.public.tbls
-SELECT * FROM source_metastore.public.tbls
-WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc');
+-- Step 7: Insert `partitions` (handling `sd_id` dependency)
+INSERT INTO target_metastore.public.partitions (part_id, tbl_id, create_time, last_access_time, sd_id, parameters)
+SELECT s.part_id, t.tbl_id, s.create_time, s.last_access_time, s.sd_id, s.parameters
+FROM source_metastore.public.partitions s
+JOIN target_metastore.public.tbls t ON s.tbl_id = t.tbl_id
+WHERE t.db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.partitions p WHERE p.part_id = s.part_id);
 
--- 6️⃣ Copy `columns_v2` (Column Details)
-INSERT INTO target_metastore.public.columns_v2
-SELECT * FROM source_metastore.public.columns_v2
-WHERE cd_id IN (
-    SELECT cd_id FROM source_metastore.public.cds
-    WHERE cd_id IN (
-        SELECT cd_id FROM source_metastore.public.sds
-        WHERE sd_id IN (
-            SELECT sd_id FROM source_metastore.public.tbls 
-            WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-        )
-    )
-);
+-- Step 8: Insert `partition_keys` (partition column details)
+INSERT INTO target_metastore.public.partition_keys (tbl_id, pkey_name, pkey_type, comment)
+SELECT s.tbl_id, s.pkey_name, s.pkey_type, s.comment
+FROM source_metastore.public.partition_keys s
+WHERE s.tbl_id IN (SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc'))
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.partition_keys t WHERE t.tbl_id = s.tbl_id AND t.pkey_name = s.pkey_name);
 
--- 7️⃣ Copy `partition_keys` (Partition Keys for Tables)
-INSERT INTO target_metastore.public.partition_keys
-SELECT * FROM source_metastore.public.partition_keys
-WHERE tbl_id IN (
-    SELECT tbl_id FROM source_metastore.public.tbls
-    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-);
+-- Step 9: Insert `partition_params` (partition metadata)
+INSERT INTO target_metastore.public.partition_params (part_id, param_key, param_value)
+SELECT s.part_id, s.param_key, s.param_value
+FROM source_metastore.public.partition_params s
+WHERE s.part_id IN (SELECT part_id FROM target_metastore.public.partitions WHERE tbl_id IN (SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')))
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.partition_params t WHERE t.part_id = s.part_id AND t.param_key = s.param_key);
 
--- 8️⃣ Copy `partitions` (Partitions - Now Safe)
-INSERT INTO target_metastore.public.partitions
-SELECT * FROM source_metastore.public.partitions
-WHERE tbl_id IN (
-    SELECT tbl_id FROM source_metastore.public.tbls
-    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-);
-
--- 9️⃣ Copy `partition_params` (Partition Parameters)
-INSERT INTO target_metastore.public.partition_params
-SELECT * FROM source_metastore.public.partition_params
-WHERE part_id IN (
-    SELECT part_id FROM source_metastore.public.partitions
-    WHERE tbl_id IN (
-        SELECT tbl_id FROM source_metastore.public.tbls
-        WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-    )
-);
+-- Step 10: Insert `table_params` (table metadata)
+INSERT INTO target_metastore.public.table_params (tbl_id, param_key, param_value)
+SELECT s.tbl_id, s.param_key, s.param_value
+FROM source_metastore.public.table_params s
+WHERE s.tbl_id IN (SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc'))
+AND NOT EXISTS (SELECT 1 FROM target_metastore.public.table_params t WHERE t.tbl_id = s.tbl_id AND t.param_key = s.param_key);
