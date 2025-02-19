@@ -1,0 +1,117 @@
+-- Stage 1: Copy the `abc` schema metadata into the target database
+INSERT INTO public.dbs 
+SELECT * FROM public.dbs 
+WHERE name = 'abc' 
+AND NOT EXISTS (
+    SELECT 1 FROM public.dbs WHERE name = 'abc'
+);
+
+-- Stage 2: Copy all tables belonging to the "abc" schema
+INSERT INTO public.tbls 
+SELECT * FROM public.tbls 
+WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc') 
+AND NOT EXISTS (
+    SELECT 1 FROM public.tbls 
+    WHERE tbl_name = public.tbls.tbl_name 
+    AND db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+);
+
+-- Stage 3: Copy storage descriptors (SDS) for tables in "abc" schema
+INSERT INTO public.sds 
+SELECT * FROM public.sds 
+WHERE sd_id IN (
+    SELECT sd_id FROM public.tbls 
+    WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+) 
+AND NOT EXISTS (
+    SELECT 1 FROM public.sds 
+    WHERE sd_id = public.sds.sd_id
+);
+
+-- Stage 4: Copy column definitions (COLUMNS_V2) for tables in "abc" schema
+INSERT INTO public.columns_v2 
+SELECT * FROM public.columns_v2 
+WHERE cd_id IN (
+    SELECT cd_id FROM public.sds 
+    WHERE sd_id IN (
+        SELECT sd_id FROM public.tbls 
+        WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+    )
+) 
+AND NOT EXISTS (
+    SELECT 1 FROM public.columns_v2 
+    WHERE cd_id = public.columns_v2.cd_id
+);
+
+-- Stage 5: Copy partition keys for partitioned tables
+INSERT INTO public.partition_keys 
+SELECT * FROM public.partition_keys 
+WHERE tbl_id IN (
+    SELECT tbl_id FROM public.tbls 
+    WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+) 
+AND NOT EXISTS (
+    SELECT 1 FROM public.partition_keys 
+    WHERE tbl_id = public.partition_keys.tbl_id
+);
+
+-- Stage 6: Copy partition metadata
+INSERT INTO public.partitions 
+SELECT * FROM public.partitions 
+WHERE tbl_id IN (
+    SELECT tbl_id FROM public.tbls 
+    WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+) 
+AND NOT EXISTS (
+    SELECT 1 FROM public.partitions 
+    WHERE part_id = public.partitions.part_id
+);
+
+-- Stage 7: Copy storage descriptors (SDS) for partitions
+INSERT INTO public.sds 
+SELECT * FROM public.sds 
+WHERE sd_id IN (
+    SELECT sd_id FROM public.partitions 
+    WHERE tbl_id IN (
+        SELECT tbl_id FROM public.tbls 
+        WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+    )
+) 
+AND NOT EXISTS (
+    SELECT 1 FROM public.sds 
+    WHERE sd_id = public.sds.sd_id
+);
+
+-- Stage 8: Copy column definitions for partition storage
+INSERT INTO public.columns_v2 
+SELECT * FROM public.columns_v2 
+WHERE cd_id IN (
+    SELECT cd_id FROM public.sds 
+    WHERE sd_id IN (
+        SELECT sd_id FROM public.partitions 
+        WHERE tbl_id IN (
+            SELECT tbl_id FROM public.tbls 
+            WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+        )
+    )
+) 
+AND NOT EXISTS (
+    SELECT 1 FROM public.columns_v2 
+    WHERE cd_id = public.columns_v2.cd_id
+);
+
+-- Final Validation Queries
+
+-- Validate schema exists in target
+SELECT * FROM public.dbs WHERE name = 'abc';
+
+-- Validate tables exist in target
+SELECT * FROM public.tbls 
+WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc');
+
+-- Validate partitions exist
+SELECT * FROM public.partitions 
+WHERE tbl_id IN (
+    SELECT tbl_id FROM public.tbls 
+    WHERE db_id = (SELECT db_id FROM public.dbs WHERE name = 'abc')
+);
