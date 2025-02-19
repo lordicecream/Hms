@@ -35,24 +35,28 @@ WHERE s.sd_id IN (
     SELECT DISTINCT sd_id FROM source_metastore.public.tbls
     WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
 )
+AND s.serde_id IN (SELECT serde_id FROM target_metastore.public.serdes)  -- Ensure referenced `serdes` exist
+AND s.cd_id IN (SELECT cd_id FROM target_metastore.public.cds)  -- Ensure referenced `cds` exist
 AND NOT EXISTS (SELECT 1 FROM target_metastore.public.sds t WHERE t.sd_id = s.sd_id);
 
 -- Step 5: Insert `tbls`
 INSERT INTO target_metastore.public.tbls
 SELECT * FROM source_metastore.public.tbls s
 WHERE s.db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+AND s.sd_id IN (SELECT sd_id FROM target_metastore.public.sds)  -- Ensure referenced `sds` exist
 AND NOT EXISTS (SELECT 1 FROM target_metastore.public.tbls t WHERE t.tbl_id = s.tbl_id);
 
 -- Step 6: Insert `columns_v2`
 INSERT INTO target_metastore.public.columns_v2
 SELECT * FROM source_metastore.public.columns_v2 s
-WHERE s.cd_id IN (SELECT cd_id FROM target_metastore.public.cds WHERE cd_id IN (SELECT cd_id FROM target_metastore.public.sds WHERE sd_id IN (SELECT sd_id FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc'))))
+WHERE s.cd_id IN (SELECT cd_id FROM target_metastore.public.cds)
 AND NOT EXISTS (SELECT 1 FROM target_metastore.public.columns_v2 t WHERE t.cd_id = s.cd_id AND t.column_name = s.column_name);
 
 -- Step 7: Insert `partitions`
 INSERT INTO target_metastore.public.partitions
 SELECT * FROM source_metastore.public.partitions s
 WHERE s.tbl_id IN (SELECT tbl_id FROM target_metastore.public.tbls WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc'))
+AND s.sd_id IN (SELECT sd_id FROM target_metastore.public.sds)  -- Ensure referenced `sds` exist
 AND NOT EXISTS (SELECT 1 FROM target_metastore.public.partitions p WHERE p.part_id = s.part_id);
 
 -- Step 8: Insert `partition_keys`
