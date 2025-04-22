@@ -1,191 +1,96 @@
 -- ----------------------------------------------------------------------
--- Phase 1: Core Metadata (DBS, SDS, CDS, TBL)
+-- Phase 0: Replicate Catalogs (CTLGS)
+-- Required for Hive 3.x+
 -- ----------------------------------------------------------------------
-
--- 1.1 Replicate DBS (databases)
-INSERT INTO target_metastore.public.dbs (
-  db_id, name, db_location_uri, owner_name, owner_type
+INSERT INTO target_metastore.public.ctrls (
+  ctlg_id, name, description, location_uri
 )
 SELECT 
-  db_id, name, db_location_uri, owner_name, owner_type 
+  ctlg_id, name, description, location_uri
+FROM source_metastore.public.ctrls
+WHERE NOT EXISTS (
+  SELECT 1 FROM target_metastore.public.ctrls 
+  WHERE name = source_metastore.public.ctrls.name
+);
+
+
+-- ----------------------------------------------------------------------
+-- Phase 1: Core Metadata (DBS, SDS, CDS, SERDES, TBL)
+-- ----------------------------------------------------------------------
+
+-- 1.1 DBS (databases)
+INSERT INTO target_metastore.public.dbs (
+  db_id, name, ctlg_name, db_location_uri, owner_name, owner_type, db_grants
+)
+SELECT 
+  db_id, name, ctlg_name, db_location_uri, owner_name, owner_type, db_grants
 FROM source_metastore.public.dbs 
 WHERE name = 'abc'
 AND NOT EXISTS (
   SELECT 1 FROM target_metastore.public.dbs WHERE name = 'abc'
 );
 
--- Validate
-SELECT 'DBS' AS table, COUNT(*) AS count 
-FROM target_metastore.public.dbs 
-WHERE name = 'abc';
 
-
--- 1.2 Replicate SDS (storage descriptors)
-INSERT INTO target_metastore.public.sds (
-  sd_id, cd_id, input_format, output_format, location, is_compacted
+-- 1.2 SERDES (serialization/deserialization)
+INSERT INTO target_metastore.public.serdes (
+  serde_id, name, slib, description
 )
 SELECT 
-  sd_id, cd_id, input_format, output_format, location, is_compacted 
+  serde_id, name, slib, description
+FROM source_metastore.public.serdes
+WHERE serde_id IN (
+  SELECT DISTINCT serde_id FROM source_metastore.public.sds
+)
+AND NOT EXISTS (
+  SELECT 1 FROM target_metastore.public.serdes 
+  WHERE serde_id = s.serde_id
+);
+
+
+-- 1.3 SDS (storage descriptors)
+INSERT INTO target_metastore.public.sds (
+  sd_id, cd_id, input_format, output_format, is_compacted, 
+  location, num_buckets, serde_id
+)
+SELECT 
+  sd_id, cd_id, input_format, output_format, is_compacted, 
+  location, num_buckets, serde_id
 FROM source_metastore.public.sds 
 WHERE sd_id IN (
-  SELECT DISTINCT sd_id 
-  FROM source_metastore.public.tbls 
+  SELECT DISTINCT sd_id FROM source_metastore.public.tbls 
   WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
 )
 AND NOT EXISTS (
-  SELECT 1 FROM target_metastore.public.sds WHERE sd_id = s.sd_id
-);
-
--- Validate
-SELECT 'SDS' AS table, COUNT(*) AS count 
-FROM target_metastore.public.sds 
-WHERE sd_id IN (
-  SELECT sd_id FROM source_metastore.public.tbls 
-  WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+  SELECT 1 FROM target_metastore.public.sds 
+  WHERE sd_id = s.sd_id
 );
 
 
--- 1.3 Replicate CDS (column descriptors)
+-- 1.4 CDS (column descriptors)
 INSERT INTO target_metastore.public.cds (
   cd_id, name, comment
 )
 SELECT 
-  cd_id, name, comment 
+  cd_id, name, comment
 FROM source_metastore.public.cds 
 WHERE cd_id IN (
   SELECT DISTINCT cd_id FROM source_metastore.public.sds
-  WHERE sd_id IN (
-    SELECT sd_id FROM source_metastore.public.tbls 
-    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-  )
 )
 AND NOT EXISTS (
-  SELECT 1 FROM target_metastore.public.cds WHERE cd_id = c.cd_id
-);
-
--- Validate
-SELECT 'CDS' AS table, COUNT(*) AS count 
-FROM target_metastore.public.cds 
-WHERE cd_id IN (
-  SELECT cd_id FROM source_metastore.public.sds
+  SELECT 1 FROM target_metastore.public.cds 
+  WHERE cd_id = c.cd_id
 );
 
 
--- 1.4 Replicate TBL (tables)
+-- 1.5 TBL (tables)
 INSERT INTO target_metastore.public.tbls (
-  tbl_id, tbl_name, db_id, sd_id, tbl_type, owner
+  tbl_id, tbl_name, db_id, sd_id, tbl_type, 
+  owner, retention, create_time, last_access_time
 )
 SELECT 
-  tbl_id, tbl_name, db_id, sd_id, tbl_type, owner 
+  tbl_id, tbl_name, db_id, sd_id, tbl_type, 
+  owner, retention, create_time, last_access_time
 FROM source_metastore.public.tbls 
 WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
 AND NOT EXISTS (
-  SELECT 1 FROM target_metastore.public.tbls WHERE tbl_id = t.tbl_id
-);
-
--- Validate
-SELECT 'TBL' AS table, COUNT(*) AS count 
-FROM target_metastore.public.tbls 
-WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc');
-
-
--- ----------------------------------------------------------------------
--- Phase 2: Column & Partition Metadata
--- ----------------------------------------------------------------------
-
--- 2.1 Replicate COLUMNS_V2 (column details)
-INSERT INTO target_metastore.public.columns_v2 (
-  cd_id, comment, column_name, type_name, integer_idx
-)
-SELECT 
-  cd_id, comment, column_name, type_name, integer_idx 
-FROM source_metastore.public.columns_v2 
-WHERE cd_id IN (
-  SELECT cd_id FROM target_metastore.public.cds
-)
-AND NOT EXISTS (
-  SELECT 1 FROM target_metastore.public.columns_v2 
-  WHERE cd_id = c.cd_id AND column_name = c.column_name
-);
-
--- Validate
-SELECT 'COLUMNS_V2' AS table, COUNT(*) AS count 
-FROM target_metastore.public.columns_v2 
-WHERE cd_id IN (SELECT cd_id FROM target_metastore.public.cds);
-
-
--- 2.2 Replicate PARTITIONS
-INSERT INTO target_metastore.public.partitions (
-  part_id, part_name, tbl_id, sd_id, create_time, last_access_time
-)
-SELECT 
-  part_id, part_name, tbl_id, sd_id, create_time, last_access_time 
-FROM source_metastore.public.partitions 
-WHERE tbl_id IN (
-  SELECT tbl_id 
-  FROM target_metastore.public.tbls 
-  WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
-)
-AND sd_id IN (SELECT sd_id FROM target_metastore.public.sds)
-AND NOT EXISTS (
-  SELECT 1 
-  FROM target_metastore.public.partitions 
-  WHERE part_id = p.part_id
-);
-
--- Validate
-SELECT 'PARTITIONS' AS table, COUNT(*) AS count 
-FROM target_metastore.public.partitions 
-WHERE tbl_id IN (
-  SELECT tbl_id FROM target_metastore.public.tbls 
-  WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
-);
-
-
--- 2.3 Replicate PARTITION_KEYS (partition columns)
-INSERT INTO target_metastore.public.partition_keys (
-  tbl_id, pkey_name, pkey_type, integer_idx
-)
-SELECT 
-  tbl_id, pkey_name, pkey_type, integer_idx 
-FROM source_metastore.public.partition_keys 
-WHERE tbl_id IN (
-  SELECT tbl_id FROM target_metastore.public.tbls 
-  WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
-);
-
--- Validate
-SELECT 'PARTITION_KEYS' AS table, COUNT(*) AS count 
-FROM target_metastore.public.partition_keys 
-WHERE tbl_id IN (
-  SELECT tbl_id FROM target_metastore.public.tbls 
-  WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
-);
-
-
--- ----------------------------------------------------------------------
--- Phase 3: Optional Metadata (Params, Stats)
--- ----------------------------------------------------------------------
-
--- 3.1 Replicate TABLE_PARAMS (table properties)
-INSERT INTO target_metastore.public.table_params (
-  tbl_id, param_key, param_value
-)
-SELECT 
-  tbl_id, param_key, param_value 
-FROM source_metastore.public.table_params 
-WHERE tbl_id IN (
-  SELECT tbl_id FROM target_metastore.public.tbls 
-  WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')
-);
-
--- 3.2 Replicate PARTITION_PARAMS (partition properties)
-INSERT INTO target_metastore.public.partition_params (
-  part_id, param_key, param_value
-)
-SELECT 
-  part_id, param_key, param_value 
-FROM source_metastore.public.partition_params 
-WHERE part_id IN (
-  SELECT part_id FROM target_metastore.public.partitions
-);
+  SELECT 1 FROM target_metastore
