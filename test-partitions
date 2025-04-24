@@ -1,8 +1,6 @@
 -- =====================================================================
 -- Phase 1: Catalogs (CTLGS) - Hive 3.x+ Only
 -- =====================================================================
-
--- 1.1 Insert Catalogs
 INSERT INTO target_metastore.public.ctrls (
   ctlg_id, name, description, location_uri
 )
@@ -22,7 +20,7 @@ SELECT
 
 
 -- =====================================================================
--- Phase 2: Core Metadata (DBS, SDS, SERDES, CDS)
+-- Phase 2: Core Metadata (DBS, CDS, SERDES, SDS)
 -- =====================================================================
 
 -- 2.1 Insert Databases (DBS)
@@ -45,20 +43,68 @@ SELECT
   (SELECT COUNT(*) FROM target_metastore.public.dbs WHERE name = 'abc') AS target_count;
 
 
--- 2.2 Insert Storage Descriptors (SDS)
-INSERT INTO target_metastore.public.sds (
-  sd_id, cd_id, input_format, output_format, is_compacted, 
-  location, num_buckets, serde_id
+-- 2.2 Insert CDS (MUST come before SDS)
+INSERT INTO target_metastore.public.cds (
+  cd_id, name, comment
 )
 SELECT 
-  sd_id, cd_id, input_format, output_format, is_compacted, 
-  location, num_buckets, serde_id
-FROM source_metastore.public.sds 
-WHERE sd_id IN (
-  SELECT DISTINCT sd_id 
-  FROM source_metastore.public.tbls 
-  WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+  cd_id, name, comment
+FROM source_metastore.public.cds 
+WHERE cd_id IN (
+  SELECT DISTINCT cd_id FROM source_metastore.public.sds
 )
+AND NOT EXISTS (
+  SELECT 1 FROM target_metastore.public.cds 
+  WHERE cd_id = source_metastore.public.cds.cd_id
+);
+
+-- Validate CDS
+SELECT 
+  'CDS' AS table_name,
+  (SELECT COUNT(*) FROM source_metastore.public.cds) AS source_count,
+  (SELECT COUNT(*) FROM target_metastore.public.cds) AS target_count;
+
+
+-- 2.3 Insert SERDES (MUST come before SDS)
+INSERT INTO target_metastore.public.serdes (
+  serde_id, name, slib, description
+)
+SELECT 
+  serde_id, name, slib, description
+FROM source_metastore.public.serdes
+WHERE serde_id IN (
+  SELECT DISTINCT serde_id FROM source_metastore.public.sds
+)
+AND NOT EXISTS (
+  SELECT 1 FROM target_metastore.public.serdes 
+  WHERE serde_id = source_metastore.public.serdes.serde_id
+);
+
+-- Validate SERDES
+SELECT 
+  'SERDES' AS table_name,
+  (SELECT COUNT(*) FROM source_metastore.public.serdes) AS source_count,
+  (SELECT COUNT(*) FROM target_metastore.public.serdes) AS target_count;
+
+
+-- 2.4 Insert SDS (with corrected columns and foreign key checks)
+INSERT INTO target_metastore.public.sds (
+  sd_id, cd_id, input_format, output_format, is_compressed,
+  location, num_buckets, serde_id, is_storedassubdirectories
+)
+SELECT 
+  sd_id, cd_id, input_format, output_format, is_compressed,
+  location, num_buckets, serde_id, is_storedassubdirectories
+FROM source_metastore.public.sds 
+WHERE 
+  -- Foreign key validation
+  cd_id IN (SELECT cd_id FROM target_metastore.public.cds) AND
+  serde_id IN (SELECT serde_id FROM target_metastore.public.serdes) AND
+  sd_id IN (
+    SELECT DISTINCT sd_id 
+    FROM source_metastore.public.tbls 
+    WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+  )
 AND NOT EXISTS (
   SELECT 1 FROM target_metastore.public.sds 
   WHERE sd_id = source_metastore.public.sds.sd_id
@@ -79,61 +125,4 @@ SELECT
    )) AS target_count;
 
 
--- =====================================================================
--- Phase 3: Tables & Columns (TBL, COLUMNS_V2)
--- =====================================================================
-
--- 3.1 Insert Tables (TBL)
-INSERT INTO target_metastore.public.tbls (
-  tbl_id, tbl_name, db_id, sd_id, tbl_type, 
-  owner, retention, create_time, last_access_time
-)
-SELECT 
-  tbl_id, tbl_name, db_id, sd_id, tbl_type, 
-  owner, retention, create_time, last_access_time
-FROM source_metastore.public.tbls 
-WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
-AND NOT EXISTS (
-  SELECT 1 FROM target_metastore.public.tbls 
-  WHERE tbl_id = source_metastore.public.tbls.tbl_id
-);
-
--- Validate TBL
-SELECT 
-  'TBL' AS table_name,
-  (SELECT COUNT(*) FROM source_metastore.public.tbls 
-   WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')) AS source_count,
-  (SELECT COUNT(*) FROM target_metastore.public.tbls 
-   WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')) AS target_count;
-
-
--- 3.2 Insert Columns (COLUMNS_V2)
-INSERT INTO target_metastore.public.columns_v2 (
-  cd_id, comment, column_name, type_name, integer_idx
-)
-SELECT 
-  cd_id, comment, column_name, type_name, integer_idx
-FROM source_metastore.public.columns_v2 
-WHERE cd_id IN (
-  SELECT cd_id FROM target_metastore.public.cds
-)
-AND NOT EXISTS (
-  SELECT 1 FROM target_metastore.public.columns_v2 
-  WHERE cd_id = source_metastore.public.columns_v2.cd_id 
-  AND column_name = source_metastore.public.columns_v2.column_name
-);
-
--- Validate COLUMNS_V2
-SELECT 
-  'COLUMNS_V2' AS table_name,
-  (SELECT COUNT(*) FROM source_metastore.public.columns_v2) AS source_count,
-  (SELECT COUNT(*) FROM target_metastore.public.columns_v2) AS target_count;
-
-
--- =====================================================================
--- Phase 4: Partitions (PARTITIONS, PARTITION_KEYS, PARTITION_PARAMS)
--- =====================================================================
-
--- 4.1 Insert Partitions (PARTITIONS)
-INSERT INTO target_metastore.public.partitions (
-  part_id, part_name, tbl
+--
