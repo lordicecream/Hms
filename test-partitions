@@ -1,7 +1,7 @@
 -- =====================================================================
--- Phase 0: Cleanup Previous Erroneous Data (Run First!)
+-- Phase 0: Cleanup (Run if needed)
 -- =====================================================================
--- WARNING: Truncate only if you want to reset the target metastore for 'abc'
+-- WARNING: Truncate only if you want to reset target metastore
 TRUNCATE TABLE target_metastore.public.cds CASCADE;
 TRUNCATE TABLE target_metastore.public.serdes CASCADE;
 TRUNCATE TABLE target_metastore.public.sds CASCADE;
@@ -10,15 +10,17 @@ TRUNCATE TABLE target_metastore.public.partitions CASCADE;
 
 
 -- =====================================================================
--- Phase 1: Replicate Core Metadata (Scoped to 'abc' Schema)
+-- Phase 1: Core Metadata (Scoped to 'abc' Schema)
 -- =====================================================================
 
--- 1.1 Insert DBS (databases)
+-- 1.1 Insert DBS (with full column list)
 INSERT INTO target_metastore.public.dbs (
-  db_id, name, ctlg_name, db_location_uri, owner_name, owner_type, db_grants
+  db_id, name, ctlg_name, db_location_uri, 
+  owner_name, owner_type, db_grants, create_time
 )
 SELECT 
-  db_id, name, ctlg_name, db_location_uri, owner_name, owner_type, db_grants
+  db_id, name, ctlg_name, db_location_uri, 
+  owner_name, owner_type, db_grants, create_time
 FROM source_metastore.public.dbs 
 WHERE name = 'abc'
 AND NOT EXISTS (
@@ -32,7 +34,7 @@ SELECT
   (SELECT COUNT(*) FROM target_metastore.public.dbs WHERE name = 'abc') AS target_count;
 
 
--- 1.2 Insert CDS (column descriptors used by 'abc' schema)
+-- 1.2 Insert CDS (only required columns)
 INSERT INTO target_metastore.public.cds (cd_id)
 SELECT DISTINCT s.cd_id 
 FROM source_metastore.public.sds s
@@ -55,11 +57,14 @@ SELECT
   (SELECT COUNT(*) FROM target_metastore.public.cds) AS target_count;
 
 
--- 1.3 Insert SERDES (serializers used by 'abc' schema)
+-- 1.3 Insert SERDES (with full column list)
 INSERT INTO target_metastore.public.serdes (
-  serde_id, name, slib, description
+  serde_id, name, slib, description, 
+  serde_type, serializer_class, deserializer_class
 )
-SELECT DISTINCT s.serde_id, s.name, s.slib, s.description
+SELECT DISTINCT 
+  s.serde_id, s.name, s.slib, s.description, 
+  s.serde_type, s.serializer_class, s.deserializer_class
 FROM source_metastore.public.sds s
 JOIN source_metastore.public.tbls t ON s.sd_id = t.sd_id
 JOIN source_metastore.public.dbs d ON t.db_id = d.db_id
@@ -80,14 +85,16 @@ SELECT
   (SELECT COUNT(*) FROM target_metastore.public.serdes) AS target_count;
 
 
--- 1.4 Insert SDS (storage descriptors for 'abc' schema)
+-- 1.4 Insert SDS (with full column list)
 INSERT INTO target_metastore.public.sds (
-  sd_id, cd_id, input_format, output_format, is_compressed,
-  location, num_buckets, serde_id, is_storedassubdirectories
+  sd_id, cd_id, input_format, output_format, 
+  is_compressed, location, num_buckets, 
+  serde_id, is_storedassubdirectories, parameters
 )
 SELECT 
-  s.sd_id, s.cd_id, s.input_format, s.output_format, s.is_compressed,
-  s.location, s.num_buckets, s.serde_id, s.is_storedassubdirectories
+  s.sd_id, s.cd_id, s.input_format, s.output_format, 
+  s.is_compressed, s.location, s.num_buckets, 
+  s.serde_id, s.is_storedassubdirectories, s.parameters
 FROM source_metastore.public.sds s
 JOIN source_metastore.public.tbls t ON s.sd_id = t.sd_id
 JOIN source_metastore.public.dbs d ON t.db_id = d.db_id
@@ -99,4 +106,83 @@ AND NOT EXISTS (
 
 -- Validate SDS
 SELECT 
-  'SDS' AS table
+  'SDS' AS table_name,
+  (SELECT COUNT(*) 
+   FROM source_metastore.public.sds s
+   JOIN source_metastore.public.tbls t ON s.sd_id = t.sd_id
+   JOIN source_metastore.public.dbs d ON t.db_id = d.db_id
+   WHERE d.name = 'abc') AS source_count,
+  (SELECT COUNT(*) FROM target_metastore.public.sds) AS target_count;
+
+
+-- =====================================================================
+-- Phase 2: Tables & Columns (Scoped to 'abc')
+-- =====================================================================
+
+-- 2.1 Insert TBL (with full column list)
+INSERT INTO target_metastore.public.tbls (
+  tbl_id, tbl_name, db_id, sd_id, tbl_type, 
+  owner, retention, create_time, last_access_time, 
+  rewrite_enabled, view_original_text, view_expanded_text
+)
+SELECT 
+  tbl_id, tbl_name, db_id, sd_id, tbl_type, 
+  owner, retention, create_time, last_access_time, 
+  rewrite_enabled, view_original_text, view_expanded_text
+FROM source_metastore.public.tbls 
+WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')
+AND NOT EXISTS (
+  SELECT 1 FROM target_metastore.public.tbls 
+  WHERE tbl_id = t.tbl_id
+);
+
+-- Validate TBL
+SELECT 
+  'TBL' AS table_name,
+  (SELECT COUNT(*) FROM source_metastore.public.tbls 
+   WHERE db_id = (SELECT db_id FROM source_metastore.public.dbs WHERE name = 'abc')) AS source_count,
+  (SELECT COUNT(*) FROM target_metastore.public.tbls 
+   WHERE db_id = (SELECT db_id FROM target_metastore.public.dbs WHERE name = 'abc')) AS target_count;
+
+
+-- =====================================================================
+-- Phase 3: Partitions (Scoped to 'abc')
+-- =====================================================================
+
+-- 3.1 Insert PARTITIONS (full column list)
+INSERT INTO target_metastore.public.partitions (
+  part_id, part_name, tbl_id, sd_id, create_time, 
+  last_access_time, last_analyze_time, write_id
+)
+SELECT 
+  p.part_id, p.part_name, p.tbl_id, p.sd_id, p.create_time, 
+  p.last_access_time, p.last_analyze_time, p.write_id
+FROM source_metastore.public.partitions p
+JOIN source_metastore.public.tbls t ON p.tbl_id = t.tbl_id
+JOIN source_metastore.public.dbs d ON t.db_id = d.db_id
+WHERE d.name = 'abc'
+AND NOT EXISTS (
+  SELECT 1 FROM target_metastore.public.partitions 
+  WHERE part_id = p.part_id
+);
+
+-- Validate PARTITIONS
+SELECT 
+  'PARTITIONS' AS table_name,
+  (SELECT COUNT(*) 
+   FROM source_metastore.public.partitions p
+   JOIN source_metastore.public.tbls t ON p.tbl_id = t.tbl_id
+   JOIN source_metastore.public.dbs d ON t.db_id = d.db_id
+   WHERE d.name = 'abc') AS source_count,
+  (SELECT COUNT(*) FROM target_metastore.public.partitions) AS target_count;
+
+
+-- =====================================================================
+-- Phase 4: Reset Sequences (Run on PostgreSQL)
+-- =====================================================================
+/*
+SELECT setval('dbs_db_id_seq', (SELECT MAX(db_id) FROM dbs));
+SELECT setval('tbls_tbl_id_seq', (SELECT MAX(tbl_id) FROM tbls));
+SELECT setval('sds_sd_id_seq', (SELECT MAX(sd_id) FROM sds));
+SELECT setval('partitions_part_id_seq', (SELECT MAX(part_id) FROM partitions));
+*/
