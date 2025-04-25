@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+import trino
+import argparse
+import os
+import sys
+
+def get_connection(catalog, host, port, user):
+    return trino.dbapi.connect(
+        host=host,
+        port=port,
+        user=user,
+        catalog=catalog,
+    )
+
+def get_all_tables(conn, catalog, schema):
+    cursor = conn.cursor()
+    cursor.execute(f"SHOW TABLES FROM {catalog}.{schema}")
+    return [row[0] for row in cursor.fetchall()]
+
+def get_tables_from_file(filepath):
+    if not os.path.exists(filepath):
+        print(f"Table list file not found: {filepath}")
+        sys.exit(1)
+    with open(filepath, "r") as f:
+        content = f.read().strip()
+    return [tbl.strip() for tbl in content.split(",") if tbl.strip()]
+
+def get_create_ddl(conn, fq_name):
+    cursor = conn.cursor()
+    cursor.execute(f"SHOW CREATE {fq_name}")
+    # SHOW CREATE SCHEMA or SHOW CREATE TABLE both return one-column with the DDL
+    return cursor.fetchone()[0]
+
+def execute_ddl(conn, ddl):
+    cursor = conn.cursor()
+    cursor.execute(ddl)
+
+def replicate(args):
+    # Connect to source and target catalogs
+    src_conn = get_connection(args.source_catalog, args.trino_host, args.trino_port, args.trino_user)
+    tgt_conn = get_connection(args.target_catalog, args.trino_host, args.trino_port, args.trino_user)
+
+    # 1) Replicate the schema itself
+    src_schema_fq = f"SCHEMA {args.source_catalog}.{args.schema}"
+    tgt_schema_fq = f"{args.target_catalog}.{args.schema}"
+    print(f"\n-- Replicating schema: {src_schema_fq} -> {tgt_schema_fq}")
+    try:
+        schema_ddl = get_create_ddl(src_conn, src_schema_fq)
+        # rewrite the CREATE SCHEMA ... WITH (...) to target catalog.schema
+        schema_ddl = schema_ddl.replace(f"{args.source_catalog}.{args.schema}", tgt_schema_fq)
+        execute_ddl(tgt_conn, schema_ddl)
+        print(f"✅ Schema created: {tgt_schema_fq}")
+    except Exception as e:
+        print(f"⚠️  Skipping schema creation (maybe it already exists?): {e}")
+
+    # 2) Determine which tables to replicate
+    if args.mode == "all":
+        tables = get_all_tables(src_conn, args.source_catalog, args.schema)
+    else:
+        tables = get_tables_from_file(args.table_list_file)
+
+    # 3) Replicate each table
+    for tbl in tables:
+        src_table_fq = f"TABLE {args.source_catalog}.{args.schema}.{tbl}"
+        tgt_table_fq = f"{args.target_catalog}.{args.schema}.{tbl}"
+        print(f"\n-- Replicating table: {src_table_fq} -> {tgt_table_fq}")
+        try:
+            tbl_ddl = get_create_ddl(src_conn, src_table_fq)
+            tbl_ddl = tbl_ddl.replace(f"{args.source_catalog}.{args.schema}", f"{args.target_catalog}.{args.schema}")
+            execute_ddl(tgt_conn, tbl_ddl)
+            print(f"✅ Table created: {tgt_table_fq}")
+        except Exception as e:
+            print(f"❌ Failed to replicate {tbl}: {e}")
+
+    src_conn.close()
+    tgt_conn.close()
+    print("\n🎉 Replication process complete.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Replicate a Hive schema and its tables from one Trino catalog to another."
+    )
+    parser.add_argument("--trino-host",      required=True, help="Trino coordinator host")
+    parser.add_argument("--trino-port", type=int, default=8080, help="Trino port")
+    parser.add_argument("--trino-user",      default="jenkins", help="Trino user")
+    parser.add_argument("--source-catalog",  required=True, help="Source Trino catalog (e.g., hmsa)")
+    parser.add_argument("--target-catalog",  required=True, help="Target Trino catalog (e.g., hmsb)")
+    parser.add_argument("--schema",          required=True, help="Schema name to replicate (e.g., abc)")
+    parser.add_argument("--mode",            choices=["all", "file"], required=True,
+                        help="‘all’ to replicate every table, ‘file’ to replicate only those in --table-list-file")
+    parser.add_argument("--table-list-file", help="Path to comma-separated table list (required if mode=file)")
+
+    args = parser.parse_args()
+
+    if args.mode == "file" and not args.table_list_file:
+        parser.error("--table-list-file is required when --mode=file")
+    replicate(args)
