@@ -1,0 +1,78 @@
+import trino
+from trino.dbapi import connect
+
+def get_trino_connection(host, port, user):
+    return connect(
+        host=host,
+        port=int(port),
+        user=user,
+        catalog='system',  # default for connection
+        http_scheme='http'
+    )
+
+def get_create_schema_query(conn, catalog, schema):
+    cursor = conn.cursor()
+    cursor.execute(f"SHOW CREATE SCHEMA {catalog}.{schema}")
+    return cursor.fetchall()[0][0]
+
+def create_schema_in_dest(conn, dest_catalog, schema, create_query):
+    cursor = conn.cursor()
+    # Replace source catalog with destination catalog in query
+    modified_query = create_query.replace(f"{schema}", f"{dest_catalog}.{schema}", 1)
+    try:
+        cursor.execute(modified_query)
+        print(f"Schema {dest_catalog}.{schema} created.")
+    except Exception as e:
+        if "already exists" in str(e):
+            print(f"Schema {dest_catalog}.{schema} already exists.")
+        else:
+            raise e
+
+def get_table_list(conn, catalog, schema):
+    cursor = conn.cursor()
+    cursor.execute(f"SHOW TABLES FROM {catalog}.{schema}")
+    return [row[0] for row in cursor.fetchall()]
+
+def get_create_table_query(conn, catalog, schema, table):
+    cursor = conn.cursor()
+    cursor.execute(f"SHOW CREATE TABLE {catalog}.{schema}.{table}")
+    return cursor.fetchall()[0][0]
+
+def create_table_in_dest(conn, dest_catalog, schema, table, create_query):
+    cursor = conn.cursor()
+    modified_query = create_query.replace(f"{schema}.{table}", f"{dest_catalog}.{schema}.{table}", 1)
+    try:
+        cursor.execute(modified_query)
+        print(f"Table {dest_catalog}.{schema}.{table} created.")
+    except Exception as e:
+        if "already exists" in str(e):
+            print(f"Table {dest_catalog}.{schema}.{table} already exists.")
+        else:
+            raise e
+
+def replicate_schema(
+    host,
+    port,
+    user,
+    source_catalog,
+    dest_catalog,
+    schema,
+    full_replicate=True,
+    table_list=None
+):
+    conn = get_trino_connection(host, port, user)
+
+    # Replicate schema
+    create_schema_sql = get_create_schema_query(conn, source_catalog, schema)
+    create_schema_in_dest(conn, dest_catalog, schema, create_schema_sql)
+
+    # Decide tables to replicate
+    if full_replicate:
+        tables_to_copy = get_table_list(conn, source_catalog, schema)
+    else:
+        tables_to_copy = table_list or []
+
+    # Replicate each table
+    for table in tables_to_copy:
+        create_table_sql = get_create_table_query(conn, source_catalog, schema, table)
+        create_table_in_dest(conn, dest_catalog, schema, table, create_table_sql)
