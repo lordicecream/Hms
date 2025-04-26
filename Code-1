@@ -67,14 +67,36 @@ table_list_file = 'tables_to_replicate.txt'  # used only if full_schema_replicat
 source_conn = connect_to_trino(source_host, port, user, password)
 dest_conn = connect_to_trino(dest_host, port, user, password)
 
-# -------------- Schema Check/Create --------------
-replicate_schema_if_missing(source_conn, dest_conn, source_catalog, dest_catalog, schema)
+# Check if schema exists, replicate if not
+if not schema_exists(dest_conn, dest_catalog, schema):
+    print(f"Schema '{schema}' not found in '{dest_catalog}', replicating...")
+    replicate_schema_if_missing(source_conn, dest_conn, source_catalog, dest_catalog, schema)
+    print(f"Schema '{schema}' replicated successfully.")
+else:
+    print(f"Schema '{schema}' already exists in '{dest_catalog}'.")
 
-# -------------- Table Replication ----------------
+# Decide tables to replicate
 if full_schema_replicate:
     source_tables = list_tables(source_conn, source_catalog, schema)
-    replicate_selected_tables(source_conn, dest_conn, source_catalog, dest_catalog, schema, source_tables)
+    print(f"Replicating all tables from schema '{schema}': {source_tables}")
 else:
     with open(table_list_file, 'r') as f:
-        table_list = f.read().strip().split(',')
-    replicate_selected_tables(source_conn, dest_conn, source_catalog, dest_catalog, schema, table_list)
+        source_tables = [t.strip() for t in f.read().strip().split(',') if t.strip()]
+    print(f"Replicating selected tables from schema '{schema}': {source_tables}")
+
+# List tables in destination to compare
+dest_tables = list_tables(dest_conn, dest_catalog, schema)
+
+# Replicate missing tables
+for table in source_tables:
+    if table not in dest_tables:
+        print(f"Table '{table}' not found in destination. Replicating...")
+        create_sql = get_create_table_sql(source_conn, source_catalog, schema, table)
+        create_sql = create_sql.replace(
+            f"{source_catalog}.{schema}.{table}",
+            f"{dest_catalog}.{schema}.{table}"
+        )
+        dest_conn.cursor().execute(create_sql)
+        print(f"Table '{table}' replicated successfully.")
+    else:
+        print(f"Table '{table}' already exists in destination. Skipping.")
