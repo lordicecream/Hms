@@ -2,48 +2,43 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'SCHEMA_NAME', defaultValue: 'abc', description: 'Schema name to replicate')
-        choice(name: 'FULL_SCHEMA_REPLICATE', choices: ['yes', 'no'], description: 'Replicate full schema?')
+        string(name: 'SCHEMA_NAME', defaultValue: 'abc', description: 'Schema to replicate')
+        choice(name: 'FULL_SCHEMA_REPLICATE', choices: ['yes', 'no'], description: 'Replicate all tables?')
         string(name: 'SOURCE_CATALOG', defaultValue: 'hmsa', description: 'Source catalog')
         string(name: 'DEST_CATALOG', defaultValue: 'hmsb', description: 'Destination catalog')
+        string(name: 'TRINO_SOURCE_HOST', defaultValue: 'https://source-trino-host:8443', description: 'Source Trino Host')
+        string(name: 'TRINO_DEST_HOST', defaultValue: 'https://dest-trino-host:8443', description: 'Destination Trino Host')
     }
 
     environment {
-        TRINO_SOURCE_HOST = 'https://source-trino-host:8443'
-        TRINO_DEST_HOST = 'https://dest-trino-host:8443'
-        TRINO_USER = 'your_user'
-        TRINO_PASSWORD = 'your_password'
+        TRINO_USER = credentials('trino-username')
+        TRINO_PASSWORD = credentials('trino-password')
     }
 
     stages {
-        stage('Clone Repo') {
+        stage('Clone repo') {
             steps {
-                git url: 'https://your.git.repo/trino-replication.git', branch: 'main'
+                git url: 'https://your-git-repo-url', branch: 'main'
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Run Python Script in Docker') {
             steps {
-                sh 'docker build -t trino-replicator .'
-            }
-        }
-
-        stage('Run Replication') {
-            steps {
-                script {
-                    def fullFlag = params.FULL_SCHEMA_REPLICATE == 'yes' ? '--full' : '--table-file tables.txt'
-                    sh """
-                        docker run --rm trino-replicator \
-                        --source-host ${env.TRINO_SOURCE_HOST} \
-                        --dest-host ${env.TRINO_DEST_HOST} \
-                        --source-catalog ${params.SOURCE_CATALOG} \
-                        --dest-catalog ${params.DEST_CATALOG} \
-                        --schema ${params.SCHEMA_NAME} \
-                        --user ${env.TRINO_USER} \
-                        --password ${env.TRINO_PASSWORD} \
-                        ${fullFlag}
-                    """
-                }
+                sh """
+                docker run --rm \
+                    -v \$(pwd):/app \
+                    -w /app \
+                    python:3.10 \
+                    python replicate_trino_metadata.py \
+                    --source-host ${params.TRINO_SOURCE_HOST} \
+                    --dest-host ${params.TRINO_DEST_HOST} \
+                    --username ${env.TRINO_USER} \
+                    --password ${env.TRINO_PASSWORD} \
+                    --schema ${params.SCHEMA_NAME} \
+                    --source-catalog ${params.SOURCE_CATALOG} \
+                    --dest-catalog ${params.DEST_CATALOG} \
+                    ${params.FULL_SCHEMA_REPLICATE == 'yes' ? '--full' : '--table-file table_list.txt'}
+                """
             }
         }
     }
