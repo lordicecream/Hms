@@ -1,0 +1,103 @@
+# trino_replicator.py
+
+import trino
+import argparse
+import os
+import sys
+
+def connect_to_trino(host, user, password):
+    conn = trino.dbapi.connect(
+        http_scheme="https",
+        host=host.replace("https://", "").replace("http://", ""),
+        port=443,
+        user=user,
+        auth=trino.auth.BasicAuthentication(user, password),
+        verify=False,
+    )
+    return conn
+
+def schema_exists(conn, catalog, schema):
+    cursor = conn.cursor()
+    cursor.execute(f"SHOW SCHEMAS FROM {catalog}")
+    schemas = [row[0] for row in cursor.fetchall()]
+    return schema in schemas
+
+def create_schema(dest_conn, source_conn, source_catalog, dest_catalog, schema):
+    cursor = source_conn.cursor()
+    cursor.execute(f"SHOW CREATE SCHEMA {source_catalog}.{schema}")
+    create_schema_sql = cursor.fetchone()[0]
+    create_schema_sql = create_schema_sql.replace(source_catalog, dest_catalog)
+    print(f"Creating schema {schema} in {dest_catalog}...")
+    cursor_dest = dest_conn.cursor()
+    cursor_dest.execute(create_schema_sql)
+    print(f"Schema {schema} created successfully.")
+
+def table_exists(conn, catalog, schema, table):
+    cursor = conn.cursor()
+    cursor.execute(f"SHOW TABLES FROM {catalog}.{schema}")
+    tables = [row[0] for row in cursor.fetchall()]
+    return table in tables
+
+def replicate_table(dest_conn, source_conn, source_catalog, dest_catalog, schema, table):
+    cursor = source_conn.cursor()
+    cursor.execute(f"SHOW CREATE TABLE {source_catalog}.{schema}.{table}")
+    create_table_sql = cursor.fetchone()[0]
+    create_table_sql = create_table_sql.replace(source_catalog, dest_catalog)
+    print(f"Replicating table {table}...")
+    cursor_dest = dest_conn.cursor()
+    cursor_dest.execute(create_table_sql)
+    print(f"Table {table} replicated successfully.")
+
+def get_all_tables(conn, catalog, schema):
+    cursor = conn.cursor()
+    cursor.execute(f"SHOW TABLES FROM {catalog}.{schema}")
+    tables = [row[0] for row in cursor.fetchall()]
+    return tables
+
+def main():
+    parser = argparse.ArgumentParser(description="Trino schema and table replicator")
+    parser.add_argument("--source-host", required=True, help="Source Trino Host")
+    parser.add_argument("--dest-host", required=True, help="Destination Trino Host")
+    parser.add_argument("--source-catalog", required=True, help="Source catalog")
+    parser.add_argument("--dest-catalog", required=True, help="Destination catalog")
+    parser.add_argument("--schema", required=True, help="Schema name to replicate")
+    parser.add_argument("--user", required=True, help="Trino Username")
+    parser.add_argument("--password", required=True, help="Trino Password")
+    parser.add_argument("--full", action='store_true', help="Replicate full schema")
+    parser.add_argument("--table-file", help="Path to file with comma-separated table names for partial replication")
+
+    args = parser.parse_args()
+
+    # Connect to Trino
+    source_conn = connect_to_trino(args.source_host, args.user, args.password)
+    dest_conn = connect_to_trino(args.dest_host, args.user, args.password)
+
+    # Check if schema exists in dest
+    if not schema_exists(dest_conn, args.dest_catalog, args.schema):
+        print(f"Schema {args.schema} not found in {args.dest_catalog}. Replicating...")
+        create_schema(dest_conn, source_conn, args.source_catalog, args.dest_catalog, args.schema)
+    else:
+        print(f"Schema {args.schema} already exists in {args.dest_catalog}.")
+
+    # Determine tables to replicate
+    if args.full:
+        tables_to_replicate = get_all_tables(source_conn, args.source_catalog, args.schema)
+    else:
+        if not args.table_file or not os.path.exists(args.table_file):
+            print("Error: Table list file required for partial replication and file not found!")
+            sys.exit(1)
+        with open(args.table_file, 'r') as f:
+            tables_to_replicate = f.read().strip().split(',')
+
+    # Replicate tables
+    for table in tables_to_replicate:
+        table = table.strip()
+        if not table:
+            continue
+        if not table_exists(dest_conn, args.dest_catalog, args.schema, table):
+            replicate_table(dest_conn, source_conn, args.source_catalog, args.dest_catalog, args.schema, table)
+        else:
+            print(f"Table {table} already exists in {args.dest_catalog}.{args.schema}. Skipping...")
+
+if __name__ == "__main__":
+    main()
