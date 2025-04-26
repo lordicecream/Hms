@@ -1,0 +1,50 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'SCHEMA_NAME', defaultValue: 'abc', description: 'Schema name to replicate')
+        choice(name: 'FULL_SCHEMA_REPLICATE', choices: ['yes', 'no'], description: 'Replicate full schema?')
+        string(name: 'SOURCE_CATALOG', defaultValue: 'hmsa', description: 'Source catalog')
+        string(name: 'DEST_CATALOG', defaultValue: 'hmsb', description: 'Destination catalog')
+    }
+
+    environment {
+        TRINO_SOURCE_HOST = 'https://source-trino-host:8443'
+        TRINO_DEST_HOST = 'https://dest-trino-host:8443'
+        TRINO_USER = 'your_user'
+        TRINO_PASSWORD = 'your_password'
+    }
+
+    stages {
+        stage('Clone Repo') {
+            steps {
+                git url: 'https://your.git.repo/trino-replication.git', branch: 'main'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh 'docker build -t trino-replicator .'
+            }
+        }
+
+        stage('Run Replication') {
+            steps {
+                script {
+                    def fullFlag = params.FULL_SCHEMA_REPLICATE == 'yes' ? '--full' : '--table-file tables.txt'
+                    sh """
+                        docker run --rm trino-replicator \
+                        --source-host ${env.TRINO_SOURCE_HOST} \
+                        --dest-host ${env.TRINO_DEST_HOST} \
+                        --source-catalog ${params.SOURCE_CATALOG} \
+                        --dest-catalog ${params.DEST_CATALOG} \
+                        --schema ${params.SCHEMA_NAME} \
+                        --user ${env.TRINO_USER} \
+                        --password ${env.TRINO_PASSWORD} \
+                        ${fullFlag}
+                    """
+                }
+            }
+        }
+    }
+}
