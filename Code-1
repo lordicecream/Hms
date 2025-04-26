@@ -1,102 +1,84 @@
-import trino
-from trino.auth import BasicAuthentication
+import argparse
+import requests
 from trino.dbapi import connect
+from trino.auth import BasicAuthentication
 
-def connect_to_trino(host, port, user, password):
-    return connect(
-        host=host,
-        port=int(port),
+def run_query(host, user, password, query):
+    conn = connect(
+        http_scheme="https",
+        host=host.replace("https://", "").replace("http://", ""),
+        port=443,
         user=user,
         auth=BasicAuthentication(user, password),
-        http_scheme='https',
-        catalog='system',
-        verify=False
+        verify=False,
     )
+    cur = conn.cursor()
+    cur.execute(query)
+    return cur.fetchall()
 
-def schema_exists(conn, catalog, schema):
-    cursor = conn.cursor()
-    cursor.execute(f"SHOW SCHEMAS FROM {catalog}")
-    schemas = [row[0] for row in cursor.fetchall()]
+def schema_exists(host, user, password, catalog, schema):
+    query = f"SHOW SCHEMAS FROM {catalog}"
+    schemas = [row[0] for row in run_query(host, user, password, query)]
     return schema in schemas
 
-def get_create_schema_sql(conn, catalog, schema):
-    cursor = conn.cursor()
-    cursor.execute(f"SHOW CREATE SCHEMA {catalog}.{schema}")
-    return cursor.fetchall()[0][0]
-
-def list_tables(conn, catalog, schema):
-    cursor = conn.cursor()
-    cursor.execute(f"SHOW TABLES FROM {catalog}.{schema}")
-    return [row[0] for row in cursor.fetchall()]
-
-def get_create_table_sql(conn, catalog, schema, table):
-    cursor = conn.cursor()
-    cursor.execute(f"SHOW CREATE TABLE {catalog}.{schema}.{table}")
-    return cursor.fetchall()[0][0]
-
-def replicate_schema_if_missing(source_conn, dest_conn, source_catalog, dest_catalog, schema):
-    if not schema_exists(dest_conn, dest_catalog, schema):
-        create_schema_sql = get_create_schema_sql(source_conn, source_catalog, schema)
-        adjusted_sql = create_schema_sql.replace(f"{source_catalog}.{schema}", f"{dest_catalog}.{schema}")
-        dest_conn.cursor().execute(adjusted_sql)
-
-def replicate_selected_tables(source_conn, dest_conn, source_catalog, dest_catalog, schema, table_list):
-    dest_tables = list_tables(dest_conn, dest_catalog, schema)
-
-    for table in table_list:
-        table = table.strip()
-        if table and table not in dest_tables:
-            create_table_sql = get_create_table_sql(source_conn, source_catalog, schema, table)
-            adjusted_sql = create_table_sql.replace(f"{source_catalog}.{schema}.{table}", f"{dest_catalog}.{schema}.{table}")
-            dest_conn.cursor().execute(adjusted_sql)
-
-# -------------- Configuration --------------------
-# You will pass these via Jenkins later
-source_host = 'your-trino-source-host'
-dest_host = 'your-trino-dest-host'
-port = 443
-user = 'your-user'
-password = 'your-password'
-source_catalog = 'hmsa'
-dest_catalog = 'hmsb'
-schema = 'abc'
-full_schema_replicate = False  # set True for full schema
-table_list_file = 'tables_to_replicate.txt'  # used only if full_schema_replicate is False
-
-# -------------- Connect --------------------------
-source_conn = connect_to_trino(source_host, port, user, password)
-dest_conn = connect_to_trino(dest_host, port, user, password)
-
-# Check if schema exists, replicate if not
-if not schema_exists(dest_conn, dest_catalog, schema):
-    print(f"Schema '{schema}' not found in '{dest_catalog}', replicating...")
-    replicate_schema_if_missing(source_conn, dest_conn, source_catalog, dest_catalog, schema)
-    print(f"Schema '{schema}' replicated successfully.")
-else:
-    print(f"Schema '{schema}' already exists in '{dest_catalog}'.")
-
-# Decide tables to replicate
-if full_schema_replicate:
-    source_tables = list_tables(source_conn, source_catalog, schema)
-    print(f"Replicating all tables from schema '{schema}': {source_tables}")
-else:
-    with open(table_list_file, 'r') as f:
-        source_tables = [t.strip() for t in f.read().strip().split(',') if t.strip()]
-    print(f"Replicating selected tables from schema '{schema}': {source_tables}")
-
-# List tables in destination to compare
-dest_tables = list_tables(dest_conn, dest_catalog, schema)
-
-# Replicate missing tables
-for table in source_tables:
-    if table not in dest_tables:
-        print(f"Table '{table}' not found in destination. Replicating...")
-        create_sql = get_create_table_sql(source_conn, source_catalog, schema, table)
-        create_sql = create_sql.replace(
-            f"{source_catalog}.{schema}.{table}",
-            f"{dest_catalog}.{schema}.{table}"
-        )
-        dest_conn.cursor().execute(create_sql)
-        print(f"Table '{table}' replicated successfully.")
+def create_schema_if_missing(source_host, dest_host, user, password, source_catalog, dest_catalog, schema):
+    if not schema_exists(dest_host, user, password, dest_catalog, schema):
+        print(f"Schema '{schema}' not found in {dest_catalog}, replicating from source...")
+        show_create = run_query(source_host, user, password, f"SHOW CREATE SCHEMA {source_catalog}.{schema}")
+        create_stmt = show_create[0][0]
+        create_stmt = create_stmt.replace(f"{source_catalog}.{schema}", f"{dest_catalog}.{schema}")
+        run_query(dest_host, user, password, create_stmt)
+        print(f"Schema '{schema}' created.")
     else:
-        print(f"Table '{table}' already exists in destination. Skipping.")
+        print(f"Schema '{schema}' already exists in {dest_catalog}.")
+
+def table_exists(host, user, password, catalog, schema, table):
+    query = f"SHOW TABLES FROM {catalog}.{schema}"
+    tables = [row[0] for row in run_query(host, user, password, query)]
+    return table in tables
+
+def replicate_table(source_host, dest_host, user, password, source_catalog, dest_catalog, schema, table):
+    if not table_exists(dest_host, user, password, dest_catalog, schema, table):
+        print(f"Table '{table}' not found in {dest_catalog}.{schema}, replicating...")
+        show_create = run_query(source_host, user, password, f"SHOW CREATE TABLE {source_catalog}.{schema}.{table}")
+        create_stmt = show_create[0][0]
+        create_stmt = create_stmt.replace(f"{source_catalog}.{schema}", f"{dest_catalog}.{schema}")
+        run_query(dest_host, user, password, create_stmt)
+        print(f"Table '{table}' created.")
+    else:
+        print(f"Table '{table}' already exists in {dest_catalog}.{schema}.")
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source-host", required=True)
+    parser.add_argument("--dest-host", required=True)
+    parser.add_argument("--username", required=True)
+    parser.add_argument("--password", required=True)
+    parser.add_argument("--schema", required=True)
+    parser.add_argument("--source-catalog", required=True)
+    parser.add_argument("--dest-catalog", required=True)
+    parser.add_argument("--full", action="store_true")
+    parser.add_argument("--table-file", help="Path to file with comma-separated table names")
+
+    args = parser.parse_args()
+
+    create_schema_if_missing(
+        args.source_host, args.dest_host, args.username, args.password,
+        args.source_catalog, args.dest_catalog, args.schema
+    )
+
+    if args.full:
+        query = f"SHOW TABLES FROM {args.source_catalog}.{args.schema}"
+        tables = [row[0] for row in run_query(args.source_host, args.username, args.password, query)]
+    else:
+        with open(args.table_file, "r") as f:
+            tables = [tbl.strip() for tbl in f.read().split(",") if tbl.strip()]
+
+    for table in tables:
+        replicate_table(
+            args.source_host, args.dest_host, args.username, args.password,
+            args.source_catalog, args.dest_catalog, args.schema, table
+        )
+
+if __name__ == "__main__":
+    main()
