@@ -1,0 +1,43 @@
+import trino
+from trino.dbapi import connect
+
+def connect_to_trino(host, port, user):
+    return connect(
+        host=host,
+        port=int(port),
+        user=user,
+        catalog='system',  # initial dummy catalog, gets overridden in queries
+        http_scheme='http'
+    )
+
+def show_create_schema(conn, catalog, schema):
+    cursor = conn.cursor()
+    cursor.execute(f"SHOW CREATE SCHEMA {catalog}.{schema}")
+    result = cursor.fetchall()
+    print(f"CREATE SCHEMA for {catalog}.{schema}:\n\n{result[0][0]}\n")
+    return result[0][0]
+
+def list_tables(conn, catalog, schema):
+    cursor = conn.cursor()
+    cursor.execute(f"SHOW TABLES FROM {catalog}.{schema}")
+    return [row[0] for row in cursor.fetchall()]
+
+def show_create_tables(conn, catalog, schema, tables):
+    cursor = conn.cursor()
+    for table in tables:
+        cursor.execute(f"SHOW CREATE TABLE {catalog}.{schema}.{table}")
+        result = cursor.fetchall()
+        print(f"CREATE TABLE for {catalog}.{schema}.{table}:\n\n{result[0][0]}\n")
+
+# --- Replace with your actual connection details
+host = 'your-trino-host'
+port = 8080
+user = 'your-user'
+catalog = 'hmsa'
+schema = 'abc'
+
+# --- Run
+conn = connect_to_trino(host, port, user)
+create_schema_sql = show_create_schema(conn, catalog, schema)
+tables = list_tables(conn, catalog, schema)
+show_create_tables(conn, catalog, schema, tables)
