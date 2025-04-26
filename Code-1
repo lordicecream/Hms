@@ -1,43 +1,70 @@
 import trino
+from trino.auth import BasicAuthentication
 from trino.dbapi import connect
 
-def connect_to_trino(host, port, user):
+def connect_to_trino(host, port, user, password):
     return connect(
         host=host,
         port=int(port),
         user=user,
-        catalog='system',  # initial dummy catalog, gets overridden in queries
-        http_scheme='http'
+        auth=BasicAuthentication(user, password),
+        http_scheme='https',
+        catalog='system',
+        verify=False
     )
 
-def show_create_schema(conn, catalog, schema):
+def schema_exists(conn, catalog, schema):
+    cursor = conn.cursor()
+    cursor.execute(f"SHOW SCHEMAS FROM {catalog}")
+    schemas = [row[0] for row in cursor.fetchall()]
+    return schema in schemas
+
+def get_create_schema_sql(conn, catalog, schema):
     cursor = conn.cursor()
     cursor.execute(f"SHOW CREATE SCHEMA {catalog}.{schema}")
-    result = cursor.fetchall()
-    print(f"CREATE SCHEMA for {catalog}.{schema}:\n\n{result[0][0]}\n")
-    return result[0][0]
+    return cursor.fetchall()[0][0]
 
 def list_tables(conn, catalog, schema):
     cursor = conn.cursor()
     cursor.execute(f"SHOW TABLES FROM {catalog}.{schema}")
     return [row[0] for row in cursor.fetchall()]
 
-def show_create_tables(conn, catalog, schema, tables):
+def get_create_table_sql(conn, catalog, schema, table):
     cursor = conn.cursor()
-    for table in tables:
-        cursor.execute(f"SHOW CREATE TABLE {catalog}.{schema}.{table}")
-        result = cursor.fetchall()
-        print(f"CREATE TABLE for {catalog}.{schema}.{table}:\n\n{result[0][0]}\n")
+    cursor.execute(f"SHOW CREATE TABLE {catalog}.{schema}.{table}")
+    return cursor.fetchall()[0][0]
 
-# --- Replace with your actual connection details
-host = 'your-trino-host'
-port = 8080
+def replicate_schema_if_needed(source_conn, dest_conn, source_catalog, dest_catalog, schema):
+    if not schema_exists(dest_conn, dest_catalog, schema):
+        create_schema_sql = get_create_schema_sql(source_conn, source_catalog, schema)
+        # Replace catalog name in the SQL
+        adjusted_sql = create_schema_sql.replace(f"{source_catalog}.{schema}", f"{dest_catalog}.{schema}")
+        cursor = dest_conn.cursor()
+        cursor.execute(adjusted_sql)
+
+def replicate_tables(source_conn, dest_conn, source_catalog, dest_catalog, schema, tables):
+    cursor = dest_conn.cursor()
+    for table in tables:
+        create_table_sql = get_create_table_sql(source_conn, source_catalog, schema, table)
+        adjusted_sql = create_table_sql.replace(f"{source_catalog}.{schema}.{table}", f"{dest_catalog}.{schema}.{table}")
+        cursor.execute(adjusted_sql)
+
+# --- Replace with your Trino details
+source_host = 'your-trino-source-host'
+dest_host = 'your-trino-dest-host'
+
+port = 443
 user = 'your-user'
-catalog = 'hmsa'
+password = 'your-password'
+source_catalog = 'hmsa'
+dest_catalog = 'hmsb'
 schema = 'abc'
 
-# --- Run
-conn = connect_to_trino(host, port, user)
-create_schema_sql = show_create_schema(conn, catalog, schema)
-tables = list_tables(conn, catalog, schema)
-show_create_tables(conn, catalog, schema, tables)
+# --- Connect
+source_conn = connect_to_trino(source_host, port, user, password)
+dest_conn = connect_to_trino(dest_host, port, user, password)
+
+# --- Replicate
+replicate_schema_if_needed(source_conn, dest_conn, source_catalog, dest_catalog, schema)
+tables = list_tables(source_conn, source_catalog, schema)
+replicate_tables(source_conn, dest_conn, source_catalog, dest_catalog, schema, tables)
