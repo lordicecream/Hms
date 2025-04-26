@@ -1,0 +1,92 @@
+import os
+import sys
+import trino
+import concurrent.futures
+from trino.auth import BasicAuthentication
+from tqdm import tqdm
+
+# Read parameters
+source_trino_host = sys.argv[1]
+dest_trino_host = sys.argv[2]
+source_catalog = sys.argv[3]
+dest_catalog = sys.argv[4]
+schema_name = sys.argv[5]
+full_schema_replicate = sys.argv[6].lower()  # 'yes' or 'no'
+username = sys.argv[7]
+password = sys.argv[8]
+
+# Helper functions
+def create_connection(host, username, password):
+    return trino.dbapi.connect(
+        host=host,
+        port=443,
+        user=username,
+        auth=BasicAuthentication(username, password),
+        http_scheme="https",
+        verify=False
+    )
+
+def run_query(cursor, query):
+    cursor.execute(query)
+    return cursor.fetchall()
+
+# Create connections
+src_conn = create_connection(source_trino_host, username, password)
+dest_conn = create_connection(dest_trino_host, username, password)
+src_cursor = src_conn.cursor()
+dest_cursor = dest_conn.cursor()
+
+# 1. Schema replication check
+print(f"Checking if schema {schema_name} exists in destination...")
+
+dest_schemas = run_query(dest_cursor, f"SHOW SCHEMAS FROM {dest_catalog}")
+
+schema_exists = any(schema[0] == schema_name for schema in dest_schemas)
+
+if not schema_exists:
+    print(f"Schema {schema_name} not found in destination. Creating...")
+    show_create_schema = run_query(src_cursor, f"SHOW CREATE SCHEMA {source_catalog}.{schema_name}")
+    create_schema_stmt = show_create_schema[0][0].replace(source_catalog, dest_catalog)
+    dest_cursor.execute(create_schema_stmt)
+    print(f"Schema {schema_name} created successfully.")
+else:
+    print(f"Schema {schema_name} already exists. Skipping schema creation.")
+
+# 2. Table list preparation
+print("\nPreparing list of tables to replicate...")
+
+if full_schema_replicate == "yes":
+    tables = run_query(src_cursor, f"SHOW TABLES FROM {source_catalog}.{schema_name}")
+    table_list = [t[0] for t in tables]
+else:
+    file_path = f"artifacts/{schema_name}_tables.txt"
+    if not os.path.exists(file_path):
+        print(f"Error: {file_path} not found!")
+        sys.exit(1)
+    with open(file_path, "r") as f:
+        table_list = [t.strip() for t in f.read().split(",") if t.strip()]
+
+print(f"Total tables to check and replicate: {len(table_list)}")
+
+# 3. Table replication
+print("\nStarting table replication...\n")
+
+def replicate_table(table):
+    # Check if table exists
+    table_check = run_query(dest_cursor, f"SHOW TABLES FROM {dest_catalog}.{schema_name} LIKE '{table}'")
+    if table_check:
+        return  # Table already exists
+
+    # Get create table statement
+    show_create = run_query(src_cursor, f"SHOW CREATE TABLE {source_catalog}.{schema_name}.{table}")
+    if show_create:
+        create_table_sql = show_create[0][0].replace(source_catalog, dest_catalog)
+        dest_cursor.execute(create_table_sql)
+    else:
+        print(f"Warning: Could not fetch CREATE TABLE for {table}")
+
+# Parallelism with 3 workers
+with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    list(tqdm(executor.map(replicate_table, table_list), total=len(table_list), desc="Replicating tables", ncols=100))
+
+print("\nReplication Completed Successfully.")
