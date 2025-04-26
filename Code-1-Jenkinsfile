@@ -1,45 +1,84 @@
-pipeline {
-    agent any
+import argparse
+import requests
+from trino.dbapi import connect
+from trino.auth import BasicAuthentication
 
-    parameters {
-        string(name: 'SCHEMA_NAME', defaultValue: 'abc', description: 'Schema to replicate')
-        choice(name: 'FULL_SCHEMA_REPLICATE', choices: ['yes', 'no'], description: 'Replicate all tables?')
-        string(name: 'SOURCE_CATALOG', defaultValue: 'hmsa', description: 'Source catalog')
-        string(name: 'DEST_CATALOG', defaultValue: 'hmsb', description: 'Destination catalog')
-        string(name: 'TRINO_SOURCE_HOST', defaultValue: 'https://source-trino-host:8443', description: 'Source Trino Host')
-        string(name: 'TRINO_DEST_HOST', defaultValue: 'https://dest-trino-host:8443', description: 'Destination Trino Host')
-    }
+def run_query(host, user, password, query):
+    conn = connect(
+        http_scheme="https",
+        host=host.replace("https://", "").replace("http://", ""),
+        port=443,
+        user=user,
+        auth=BasicAuthentication(user, password),
+        verify=False,
+    )
+    cur = conn.cursor()
+    cur.execute(query)
+    return cur.fetchall()
 
-    environment {
-        TRINO_USER = credentials('trino-username')
-        TRINO_PASSWORD = credentials('trino-password')
-    }
+def schema_exists(host, user, password, catalog, schema):
+    query = f"SHOW SCHEMAS FROM {catalog}"
+    schemas = [row[0] for row in run_query(host, user, password, query)]
+    return schema in schemas
 
-    stages {
-        stage('Clone repo') {
-            steps {
-                git url: 'https://your-git-repo-url', branch: 'main'
-            }
-        }
+def create_schema_if_missing(source_host, dest_host, user, password, source_catalog, dest_catalog, schema):
+    if not schema_exists(dest_host, user, password, dest_catalog, schema):
+        print(f"Schema '{schema}' not found in {dest_catalog}, replicating from source...")
+        show_create = run_query(source_host, user, password, f"SHOW CREATE SCHEMA {source_catalog}.{schema}")
+        create_stmt = show_create[0][0]
+        create_stmt = create_stmt.replace(f"{source_catalog}.{schema}", f"{dest_catalog}.{schema}")
+        run_query(dest_host, user, password, create_stmt)
+        print(f"Schema '{schema}' created.")
+    else:
+        print(f"Schema '{schema}' already exists in {dest_catalog}.")
 
-        stage('Run Python Script in Docker') {
-            steps {
-                sh """
-                docker run --rm \
-                    -v \$(pwd):/app \
-                    -w /app \
-                    python:3.10 \
-                    python replicate_trino_metadata.py \
-                    --source-host ${params.TRINO_SOURCE_HOST} \
-                    --dest-host ${params.TRINO_DEST_HOST} \
-                    --username ${env.TRINO_USER} \
-                    --password ${env.TRINO_PASSWORD} \
-                    --schema ${params.SCHEMA_NAME} \
-                    --source-catalog ${params.SOURCE_CATALOG} \
-                    --dest-catalog ${params.DEST_CATALOG} \
-                    ${params.FULL_SCHEMA_REPLICATE == 'yes' ? '--full' : '--table-file table_list.txt'}
-                """
-            }
-        }
-    }
-}
+def table_exists(host, user, password, catalog, schema, table):
+    query = f"SHOW TABLES FROM {catalog}.{schema}"
+    tables = [row[0] for row in run_query(host, user, password, query)]
+    return table in tables
+
+def replicate_table(source_host, dest_host, user, password, source_catalog, dest_catalog, schema, table):
+    if not table_exists(dest_host, user, password, dest_catalog, schema, table):
+        print(f"Table '{table}' not found in {dest_catalog}.{schema}, replicating...")
+        show_create = run_query(source_host, user, password, f"SHOW CREATE TABLE {source_catalog}.{schema}.{table}")
+        create_stmt = show_create[0][0]
+        create_stmt = create_stmt.replace(f"{source_catalog}.{schema}", f"{dest_catalog}.{schema}")
+        run_query(dest_host, user, password, create_stmt)
+        print(f"Table '{table}' created.")
+    else:
+        print(f"Table '{table}' already exists in {dest_catalog}.{schema}.")
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source-host", required=True)
+    parser.add_argument("--dest-host", required=True)
+    parser.add_argument("--username", required=True)
+    parser.add_argument("--password", required=True)
+    parser.add_argument("--schema", required=True)
+    parser.add_argument("--source-catalog", required=True)
+    parser.add_argument("--dest-catalog", required=True)
+    parser.add_argument("--full", action="store_true")
+    parser.add_argument("--table-file", help="Path to file with comma-separated table names")
+
+    args = parser.parse_args()
+
+    create_schema_if_missing(
+        args.source_host, args.dest_host, args.username, args.password,
+        args.source_catalog, args.dest_catalog, args.schema
+    )
+
+    if args.full:
+        query = f"SHOW TABLES FROM {args.source_catalog}.{args.schema}"
+        tables = [row[0] for row in run_query(args.source_host, args.username, args.password, query)]
+    else:
+        with open(args.table_file, "r") as f:
+            tables = [tbl.strip() for tbl in f.read().split(",") if tbl.strip()]
+
+    for table in tables:
+        replicate_table(
+            args.source_host, args.dest_host, args.username, args.password,
+            args.source_catalog, args.dest_catalog, args.schema, table
+        )
+
+if __name__ == "__main__":
+    main()
