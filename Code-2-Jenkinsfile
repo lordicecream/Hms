@@ -1,0 +1,56 @@
+pipeline {
+    agent {
+        docker {
+            image 'python:3.9-slim'
+            args '-u root:root'
+        }
+    }
+
+    environment {
+        GIT_CREDENTIALS_ID = 'your-git-credentials-id'
+        TRINO_CREDS_ID = 'your-trino-credentials-id'
+    }
+
+    parameters {
+        string(name: 'SOURCE_TRINO_HOST', description: 'Source Trino Host')
+        string(name: 'DEST_TRINO_HOST', description: 'Destination Trino Host')
+        string(name: 'SOURCE_CATALOG', description: 'Source Catalog Name')
+        string(name: 'DEST_CATALOG', description: 'Destination Catalog Name')
+        string(name: 'SCHEMA_NAME', description: 'Schema Name to replicate')
+        choice(name: 'FULL_SCHEMA_REPLICATE', choices: ['yes', 'no'], description: 'Replicate full schema?')
+    }
+
+    stages {
+        stage('Clone Repo') {
+            steps {
+                git branch: 'master',
+                    credentialsId: "${GIT_CREDENTIALS_ID}",
+                    url: 'https://your-git-server.com/your-org/trino-replicate.git'
+            }
+        }
+
+        stage('Install Python Packages') {
+            steps {
+                sh 'pip install trino tqdm'
+            }
+        }
+
+        stage('Run Replication Script') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: "${TRINO_CREDS_ID}", usernameVariable: 'TRINO_USER', passwordVariable: 'TRINO_PASSWORD')]) {
+                    sh """
+                        python replicate_trino.py \\
+                          "${SOURCE_TRINO_HOST}" \\
+                          "${DEST_TRINO_HOST}" \\
+                          "${SOURCE_CATALOG}" \\
+                          "${DEST_CATALOG}" \\
+                          "${SCHEMA_NAME}" \\
+                          "${FULL_SCHEMA_REPLICATE}" \\
+                          "${TRINO_USER}" \\
+                          "${TRINO_PASSWORD}"
+                    """
+                }
+            }
+        }
+    }
+}
