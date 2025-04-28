@@ -2,7 +2,6 @@ pipeline {
     agent any
     environment {
         GIT_REPO = 'https://your_git_repo_url'  // Replace with your actual Git repository URL
-        BRANCH_NAME = 'main'  // Change to your branch name if needed
     }
     parameters {
         string(name: 'source_trino_host', description: 'Source Trino Host URL', defaultValue: 'https://source-trino-host.com')
@@ -14,6 +13,7 @@ pipeline {
         string(name: 'schema_name', description: 'Schema Name to Replicate', defaultValue: 'abc')
         booleanParam(name: 'dry_run', description: 'Run in Dry-Run Mode?', defaultValue: false)
         string(name: 'artifacts_path', description: 'Path to artifacts folder with table names', defaultValue: 'trino-replicate/artifact/schema_name_tables.txt')
+        string(name: 'branch_name', description: 'Branch Name to Checkout', defaultValue: 'main')  // Added branch parameter
     }
     stages {
         stage('Cleanup Workspace') {
@@ -27,20 +27,23 @@ pipeline {
         stage('Clone Repository') {
             steps {
                 script {
-                    // Checkout the repository containing the Python script
+                    // Checkout the specified branch
                     checkout scm
+                    sh "git checkout ${params.branch_name}"  // Checkout the specified branch
                 }
             }
         }
 
-        stage('Run Python Script') {
+        stage('Run Python Script in Docker') {
             steps {
                 script {
-                    // Run the Python script inside a Python Docker container
-                    docker.image('python:3.8').inside {
-                        // Install necessary dependencies inside the container
-                        sh """
-                            pip install trino
+                    // Manually run the Python script inside a Python Docker container
+                    sh """
+                        docker run --rm \
+                        -v \$(pwd)/trino-replicate:/app \
+                        -w /app \
+                        python:3.8 bash -c "
+                            pip install trino &&
                             python trino-replicate/replicate_trino.py \
                             --source_trino_host ${params.source_trino_host} \
                             --dest_trino_host ${params.dest_trino_host} \
@@ -51,8 +54,8 @@ pipeline {
                             --schema_name ${params.schema_name} \
                             --dry_run ${params.dry_run} \
                             --artifacts_path ${params.artifacts_path}
-                        """
-                    }
+                        "
+                    """
                 }
             }
         }
