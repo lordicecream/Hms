@@ -26,9 +26,15 @@ pipeline {
         stage('Clone Repository') {
             steps {
                 script {
-                    // Checkout the specified branch from Git repository
-                    checkout scm
-                    sh "git checkout ${params.branch_name}"  // Checkout the specified branch
+                    // Checkout the specified branch from Git repository using Jenkins credentials
+                    withCredentials([usernamePassword(credentialsId: 'your-git-credentials-id', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
+                        sh """
+                            git config --global credential.helper 'store'
+                            git clone https://\$GIT_USERNAME:\$GIT_PASSWORD@your_git_repo_url.git
+                            cd trino-replicate
+                            git checkout ${params.branch_name}
+                        """
+                    }
                 }
             }
         }
