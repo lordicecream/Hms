@@ -10,7 +10,8 @@ pipeline {
         string(name: 'dest_catalog', description: 'Destination Trino Catalog', defaultValue: 'hmsb')
         string(name: 'schema_name', description: 'Schema Name to Replicate', defaultValue: 'abc')
         booleanParam(name: 'dry_run', description: 'Run in Dry-Run Mode?', defaultValue: false)
-        string(name: 'artifacts_path', description: 'Path to artifacts folder with table names', defaultValue: 'trino-replicate/artifact/schema_name_tables.txt')
+        choice(name: 'full_schema_replication', choices: ['true', 'false'], description: 'Is full schema replication required?')
+        string(name: 'artifacts_path', description: 'Path to artifacts folder with table names (required if partial replication)', defaultValue: '', required: false)
         string(name: 'branch_name', description: 'Branch Name to Checkout', defaultValue: 'main')  // Added branch parameter
     }
     stages {
@@ -28,6 +29,20 @@ pipeline {
                     // Checkout the specified branch from Git repository
                     checkout scm
                     sh "git checkout ${params.branch_name}"  // Checkout the specified branch
+                }
+            }
+        }
+
+        stage('Validate Parameters') {
+            when {
+                expression { return params.full_schema_replication == 'false' }
+            }
+            steps {
+                script {
+                    // If partial replication is selected, ensure artifacts_path is provided
+                    if (!params.artifacts_path) {
+                        error("artifacts_path parameter must be provided for partial replication.")
+                    }
                 }
             }
         }
@@ -56,6 +71,7 @@ pipeline {
                             --dest_catalog ${params.dest_catalog} \
                             --schema_name ${params.schema_name} \
                             --dry_run ${params.dry_run} \
+                            --full_schema_replication ${params.full_schema_replication} \
                             --artifacts_path ${params.artifacts_path}
                         "
                     """
