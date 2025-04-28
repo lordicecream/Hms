@@ -1,49 +1,74 @@
 pipeline {
     agent any
     environment {
-        GIT_REPO_URL = 'https://your-git-server/your-project/trino-replicate.git'
-        GIT_CREDENTIALS_ID = 'your-jenkins-git-creds-id'
-        TRINO_CREDENTIALS_ID = 'your-trino-username-password-credentials-id'
-        ARTIFACTS_PATH = './artifact'
+        GIT_REPO = 'https://your_git_repo_url'  // Replace with your actual Git repository URL
+        BRANCH_NAME = 'main'  // Change to your branch name if needed
     }
     parameters {
-        string(name: 'SOURCE_TRINO', description: 'Source Trino Host')
-        string(name: 'DEST_TRINO', description: 'Destination Trino Host')
-        string(name: 'SOURCE_CATALOG', description: 'Source Catalog Name')
-        string(name: 'DEST_CATALOG', description: 'Destination Catalog Name')
-        string(name: 'SCHEMA_NAME', description: 'Schema name to replicate')
-        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Dry run mode?')
+        string(name: 'source_trino_host', description: 'Source Trino Host URL', defaultValue: 'https://source-trino-host.com')
+        string(name: 'dest_trino_host', description: 'Destination Trino Host URL', defaultValue: 'https://dest-trino-host.com')
+        string(name: 'username', description: 'Trino Username', defaultValue: 'your_username')
+        string(name: 'password', description: 'Trino Password', defaultValue: 'your_password')
+        string(name: 'source_catalog', description: 'Source Trino Catalog', defaultValue: 'hmsa')
+        string(name: 'dest_catalog', description: 'Destination Trino Catalog', defaultValue: 'hmsb')
+        string(name: 'schema_name', description: 'Schema Name to Replicate', defaultValue: 'abc')
+        booleanParam(name: 'dry_run', description: 'Run in Dry-Run Mode?', defaultValue: false)
+        string(name: 'artifacts_path', description: 'Path to artifacts folder with table names', defaultValue: 'trino-replicate/artifact/schema_name_tables.txt')
     }
     stages {
-        stage('Checkout') {
+        stage('Cleanup Workspace') {
             steps {
-                git branch: 'master',
-                    url: "${env.GIT_REPO_URL}",
-                    credentialsId: "${env.GIT_CREDENTIALS_ID}"
-            }
-        }
-        stage('Prepare') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: "${env.TRINO_CREDENTIALS_ID}", usernameVariable: 'TRINO_USER', passwordVariable: 'TRINO_PASSWORD')]) {
-                    sh '''
-                        docker run --rm \
-                        -v $PWD:/app \
-                        -w /app \
-                        python:3.9-slim \
-                        sh -c "pip install trino tqdm && \
-                        python3 replicate_trino.py \
-                          --source_trino_host $SOURCE_TRINO \
-                          --dest_trino_host $DEST_TRINO \
-                          --username $TRINO_USER \
-                          --password $TRINO_PASSWORD \
-                          --source_catalog $SOURCE_CATALOG \
-                          --dest_catalog $DEST_CATALOG \
-                          --schema_name $SCHEMA_NAME \
-                          --dry_run $DRY_RUN \
-                          --artifacts_path $ARTIFACTS_PATH"
-                    '''
+                script {
+                    cleanWs()  // Clean the workspace at the start
                 }
             }
+        }
+
+        stage('Clone Repository') {
+            steps {
+                script {
+                    // Checkout the repository containing the Python script
+                    checkout scm
+                }
+            }
+        }
+
+        stage('Run Python Script') {
+            steps {
+                script {
+                    // Run the Python script inside a Python Docker container
+                    docker.image('python:3.8').inside {
+                        // Install necessary dependencies inside the container
+                        sh """
+                            pip install trino
+                            python trino-replicate/replicate_trino.py \
+                            --source_trino_host ${params.source_trino_host} \
+                            --dest_trino_host ${params.dest_trino_host} \
+                            --username ${params.username} \
+                            --password ${params.password} \
+                            --source_catalog ${params.source_catalog} \
+                            --dest_catalog ${params.dest_catalog} \
+                            --schema_name ${params.schema_name} \
+                            --dry_run ${params.dry_run} \
+                            --artifacts_path ${params.artifacts_path}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Cleanup Workspace After Run') {
+            steps {
+                script {
+                    cleanWs()  // Clean the workspace after the run
+                }
+            }
+        }
+    }
+    post {
+        always {
+            // Ensure workspace cleanup happens even in case of failure
+            cleanWs()
         }
     }
 }
