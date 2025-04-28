@@ -1,47 +1,55 @@
 pipeline {
-    agent {
-        docker {
-            image 'python:3.9'
-            args '-u root:root'
-        }
-    }
+    agent any
+
     environment {
-        GIT_CREDENTIALS_ID = 'git-creds-id'
-        TRINO_CREDENTIALS_ID = 'trino-creds-id'
+        GIT_CREDENTIALS_ID = 'your-git-credentials-id'
+        TRINO_CREDENTIALS_ID = 'your-trino-credentials-id'
+        DOCKER_IMAGE = 'python:3.9-slim'  // or whichever lightweight python image you want
     }
+
     parameters {
+        string(name: 'SOURCE_TRINO_HOST', description: 'Source Trino Host')
+        string(name: 'DEST_TRINO_HOST', description: 'Destination Trino Host')
+        string(name: 'SOURCE_CATALOG', description: 'Source Catalog')
+        string(name: 'DEST_CATALOG', description: 'Destination Catalog')
         string(name: 'SCHEMA_NAME', description: 'Schema to replicate')
-        choice(name: 'FULL_REPLICATE', choices: ['yes', 'no'], description: 'Replicate full schema?')
-        string(name: 'SOURCE_CATALOG', description: 'Source catalog')
-        string(name: 'DEST_CATALOG', description: 'Destination catalog')
-        string(name: 'SOURCE_TRINO_HOST', description: 'Source Trino host')
-        string(name: 'DEST_TRINO_HOST', description: 'Destination Trino host')
-        string(name: 'ARTIFACT_FILE', defaultValue: '', description: 'Path to artifact file if partial replicate')
-        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Dry run?')
+        choice(name: 'FULL_SCHEMA_REPLICATE', choices: ['yes', 'no'], description: 'Replicate full schema or selective tables?')
+        choice(name: 'DRY_RUN', choices: ['true', 'false'], description: 'Dry Run or Actual Execution?')
     }
+
     stages {
-        stage('Clone Repo') {
+        stage('Checkout') {
             steps {
-                git credentialsId: "${env.GIT_CREDENTIALS_ID}", url: 'https://your.git.repo/trino-replicate.git'
+                git credentialsId: "${GIT_CREDENTIALS_ID}", url: 'https://your-git-repo-url/trino-replicate.git', branch: 'master'
             }
         }
-        stage('Replicate') {
+
+        stage('Fetch Trino Credentials') {
             steps {
-                withCredentials([usernamePassword(credentialsId: "${env.TRINO_CREDENTIALS_ID}", usernameVariable: 'TRINO_USER', passwordVariable: 'TRINO_PASS')]) {
-                    sh """
-                        python3 replicate_trino.py \
-                        --source_host ${params.SOURCE_TRINO_HOST} \
-                        --dest_host ${params.DEST_TRINO_HOST} \
-                        --source_catalog ${params.SOURCE_CATALOG} \
-                        --dest_catalog ${params.DEST_CATALOG} \
-                        --schema_name ${params.SCHEMA_NAME} \
-                        --full_schema_replicate ${params.FULL_REPLICATE} \
-                        --artifact_path ${params.ARTIFACT_FILE} \
-                        --username $TRINO_USER \
-                        --password $TRINO_PASS \
-                        ${params.DRY_RUN ? '--dry_run' : ''}
-                    """
+                withCredentials([usernamePassword(credentialsId: "${TRINO_CREDENTIALS_ID}", usernameVariable: 'TRINO_USER', passwordVariable: 'TRINO_PASSWORD')]) {
+                    sh '''
+                        echo "Fetched Trino credentials"
+                    '''
                 }
+            }
+        }
+
+        stage('Run Replication Script') {
+            steps {
+                sh """
+                    docker pull ${DOCKER_IMAGE}
+                    docker run --rm -v "$PWD":/app -w /app ${DOCKER_IMAGE} \
+                    python3 replicate_trino.py \
+                        --source_trino_host "${SOURCE_TRINO_HOST}" \
+                        --dest_trino_host "${DEST_TRINO_HOST}" \
+                        --source_catalog "${SOURCE_CATALOG}" \
+                        --dest_catalog "${DEST_CATALOG}" \
+                        --schema_name "${SCHEMA_NAME}" \
+                        --full_schema_replicate "${FULL_SCHEMA_REPLICATE}" \
+                        --username "${TRINO_USER}" \
+                        --password "${TRINO_PASSWORD}" \
+                        --dry_run "${DRY_RUN}"
+                """
             }
         }
     }
