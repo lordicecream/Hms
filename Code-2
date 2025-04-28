@@ -11,6 +11,7 @@ def get_trino_connection(host, username, password):
         user=username,
         auth=trino.auth.BasicAuthentication(username, password),
         http_scheme="https",
+        verify=False  # Disable SSL certificate verification
     )
 
 def catalog_exists(cursor, catalog_name):
@@ -72,6 +73,8 @@ def main():
     parser.add_argument("--dest_trino_host", required=True)
     parser.add_argument("--username", required=True)
     parser.add_argument("--password", required=True)
+    parser.add_argument("--source_catalog", required=True, help="Source catalog name")
+    parser.add_argument("--dest_catalog", required=True, help="Destination catalog name")
     parser.add_argument("--schema_name", required=True)
     parser.add_argument("--dry_run", type=bool, default=True)
     parser.add_argument("--artifacts_path", type=str, default="./artifact")
@@ -83,26 +86,22 @@ def main():
     source_cursor = source_conn.cursor()
     dest_cursor = dest_conn.cursor()
 
-    source_catalog = "hmsa"
-    dest_catalog = "hmsb"
-    schema = args.schema_name
-
     # Validate catalogs
-    if not catalog_exists(source_cursor, source_catalog):
-        raise Exception(f"Source catalog {source_catalog} does not exist!")
-    if not catalog_exists(dest_cursor, dest_catalog):
-        raise Exception(f"Destination catalog {dest_catalog} does not exist!")
+    if not catalog_exists(source_cursor, args.source_catalog):
+        raise Exception(f"Source catalog {args.source_catalog} does not exist!")
+    if not catalog_exists(dest_cursor, args.dest_catalog):
+        raise Exception(f"Destination catalog {args.dest_catalog} does not exist!")
 
     # Replicate schema if needed
-    replicate_schema(source_cursor, dest_cursor, source_catalog, dest_catalog, schema, args.dry_run)
+    replicate_schema(source_cursor, dest_cursor, args.source_catalog, args.dest_catalog, args.schema_name, args.dry_run)
 
     # Get tables
-    tables = get_tables_list(source_cursor, source_catalog, schema, args.artifacts_path)
+    tables = get_tables_list(source_cursor, args.source_catalog, args.schema_name, args.artifacts_path)
 
     # Parallel table replication
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [
-            executor.submit(replicate_table, source_cursor, dest_cursor, source_catalog, dest_catalog, schema, table, args.dry_run)
+            executor.submit(replicate_table, source_cursor, dest_cursor, args.source_catalog, args.dest_catalog, args.schema_name, table, args.dry_run)
             for table in tables
         ]
         for _ in tqdm(as_completed(futures), total=len(futures), desc="Replicating tables"):
