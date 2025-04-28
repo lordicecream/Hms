@@ -1,120 +1,127 @@
+import trino
 import sys
+import argparse
 import os
-from trino.dbapi import connect
-from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
-import warnings
+import concurrent.futures
+import time
 
-# Ignore SSL warnings
-warnings.filterwarnings("ignore", message="Unverified HTTPS request")
-
-def connect_trino(host, catalog, schema, user, password):
-    conn = connect(
+def get_connection(host, username, password):
+    return trino.dbapi.connect(
         host=host,
         port=443,
+        user=username,
         http_scheme="https",
-        user=user,
-        auth=BasicAuthentication(user, password),
-        catalog=catalog,
-        schema=schema,
-        verify=False
+        auth=trino.auth.BasicAuthentication(username, password),
+        verify=False,
     )
-    return conn
 
-def schema_exists(conn, schema_name):
+def catalog_exists(conn, catalog_name):
     cursor = conn.cursor()
-    cursor.execute(f"SHOW SCHEMAS")
+    cursor.execute("SHOW CATALOGS")
+    catalogs = [row[0] for row in cursor.fetchall()]
+    return catalog_name in catalogs
+
+def schema_exists(conn, catalog_name, schema_name):
+    cursor = conn.cursor()
+    cursor.execute(f"SHOW SCHEMAS FROM {catalog_name}")
     schemas = [row[0] for row in cursor.fetchall()]
     return schema_name in schemas
 
-def create_schema(conn_source, conn_dest, schema_name):
+def create_schema(conn_source, conn_dest, source_catalog, dest_catalog, schema_name, dry_run):
     cursor_source = conn_source.cursor()
-    cursor_source.execute(f"SHOW CREATE SCHEMA {schema_name}")
+    cursor_source.execute(f"SHOW CREATE SCHEMA {source_catalog}.{schema_name}")
     create_schema_sql = cursor_source.fetchone()[0]
 
-    cursor_dest = conn_dest.cursor()
-    cursor_dest.execute(create_schema_sql)
-    print(f"Schema '{schema_name}' created on destination.")
+    if dry_run:
+        print(f"[Dry Run] Would execute schema creation: {create_schema_sql}")
+    else:
+        cursor_dest = conn_dest.cursor()
+        cursor_dest.execute(create_schema_sql)
+        print(f"Schema {schema_name} created in {dest_catalog}.")
 
-def get_tables(conn, schema_name):
-    cursor = conn.cursor()
-    cursor.execute(f"SHOW TABLES FROM {schema_name}")
+def get_all_tables(conn_source, catalog_name, schema_name):
+    cursor = conn_source.cursor()
+    cursor.execute(f"SHOW TABLES FROM {catalog_name}.{schema_name}")
     return [row[0] for row in cursor.fetchall()]
 
-def table_exists(conn, schema_name, table_name):
-    cursor = conn.cursor()
-    cursor.execute(f"SHOW TABLES FROM {schema_name}")
+def create_table(conn_source, conn_dest, source_catalog, dest_catalog, schema_name, table_name, dry_run):
+    cursor_source = conn_source.cursor()
+    cursor_source.execute(f"SHOW CREATE TABLE {source_catalog}.{schema_name}.{table_name}")
+    create_table_sql = cursor_source.fetchone()[0]
+
+    if dry_run:
+        print(f"[Dry Run] Would execute table creation for {table_name}.")
+    else:
+        cursor_dest = conn_dest.cursor()
+        cursor_dest.execute(create_table_sql)
+        print(f"Table {table_name} created in {dest_catalog}.{schema_name}.")
+
+def table_exists(conn_dest, catalog_name, schema_name, table_name):
+    cursor = conn_dest.cursor()
+    cursor.execute(f"SHOW TABLES FROM {catalog_name}.{schema_name}")
     tables = [row[0] for row in cursor.fetchall()]
     return table_name in tables
 
-def create_table(conn_source, conn_dest, schema_name, table_name):
-    cursor_source = conn_source.cursor()
-    cursor_source.execute(f"SHOW CREATE TABLE {schema_name}.{table_name}")
-    create_table_sql = cursor_source.fetchone()[0]
-
-    cursor_dest = conn_dest.cursor()
-    cursor_dest.execute(create_table_sql)
-
 def main():
-    if len(sys.argv) != 9:
-        print("Usage: replicate_trino.py <source_trino_host> <dest_trino_host> <source_catalog> <dest_catalog> <schema_name> <full_schema_replicate> <username> <password>")
+    parser = argparse.ArgumentParser(description="Replicate Trino tables between catalogs.")
+    parser.add_argument("--source_host", required=True)
+    parser.add_argument("--source_catalog", required=True)
+    parser.add_argument("--dest_host", required=True)
+    parser.add_argument("--dest_catalog", required=True)
+    parser.add_argument("--schema_name", required=True)
+    parser.add_argument("--full_schema_replicate", required=True, choices=["yes", "no"])
+    parser.add_argument("--artifact_path", required=False)
+    parser.add_argument("--username", required=True)
+    parser.add_argument("--password", required=True)
+    parser.add_argument("--dry_run", action="store_true", help="Run without making changes")
+
+    args = parser.parse_args()
+
+    # Connect to source and destination
+    conn_source = get_connection(args.source_host, args.username, args.password)
+    conn_dest = get_connection(args.dest_host, args.username, args.password)
+
+    # Step 1: Check catalogs
+    if not catalog_exists(conn_source, args.source_catalog):
+        print(f"Source catalog {args.source_catalog} does not exist!")
+        sys.exit(1)
+    if not catalog_exists(conn_dest, args.dest_catalog):
+        print(f"Destination catalog {args.dest_catalog} does not exist!")
         sys.exit(1)
 
-    source_trino_host = sys.argv[1]
-    dest_trino_host = sys.argv[2]
-    source_catalog = sys.argv[3]
-    dest_catalog = sys.argv[4]
-    schema_name = sys.argv[5]
-    full_schema_replicate = sys.argv[6].lower()
-    username = sys.argv[7]
-    password = sys.argv[8]
+    print(f"Both source and destination catalogs verified.")
 
-    print(f"Starting replication process for schema: {schema_name}")
-
-    conn_source = connect_trino(source_trino_host, source_catalog, schema_name, username, password)
-    conn_dest = connect_trino(dest_trino_host, dest_catalog, schema_name, username, password)
-
-    # Step 1: Schema creation if not exists
-    if not schema_exists(conn_dest, schema_name):
-        print(f"Schema '{schema_name}' does not exist on destination. Creating...")
-        create_schema(conn_source, conn_dest, schema_name)
+    # Step 2: Check schema
+    if not schema_exists(conn_dest, args.dest_catalog, args.schema_name):
+        print(f"Schema {args.schema_name} does not exist in destination. Creating...")
+        create_schema(conn_source, conn_dest, args.source_catalog, args.dest_catalog, args.schema_name, args.dry_run)
     else:
-        print(f"Schema '{schema_name}' already exists on destination.")
+        print(f"Schema {args.schema_name} already exists in destination.")
 
-    # Step 2: Table replication
-    source_tables = get_tables(conn_source, schema_name)
-    print(f"Found {len(source_tables)} tables in source.")
-
-    # Read table list if partial replication
-    tables_to_replicate = source_tables
-    if full_schema_replicate == "no":
-        artifact_path = f"artifacts/{schema_name}_tables.txt"
-        if os.path.exists(artifact_path):
-            with open(artifact_path, "r") as f:
-                tables_to_replicate = [line.strip() for line in f if line.strip()]
-            print(f"Partial replication enabled. {len(tables_to_replicate)} tables to replicate.")
-        else:
-            print(f"Partial replication selected but '{artifact_path}' not found. Exiting.")
+    # Step 3: Decide tables
+    if args.full_schema_replicate == "yes":
+        tables_to_replicate = get_all_tables(conn_source, args.source_catalog, args.schema_name)
+    else:
+        if not args.artifact_path:
+            print("Artifact path required for partial replication.")
             sys.exit(1)
+        with open(args.artifact_path, "r") as f:
+            tables_to_replicate = [t.strip() for t in f.read().split(",")]
 
-    # Replicate tables
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = []
-        for table_name in tables_to_replicate:
-            futures.append(executor.submit(replicate_single_table, conn_source, conn_dest, schema_name, table_name))
+    total_tables = len(tables_to_replicate)
+    print(f"Total tables to replicate: {total_tables}")
 
-        for _ in tqdm(futures, desc="Replicating tables", unit="table"):
-            _.result()
+    # Step 4: Replication with parallelism
+    def replicate(table_name):
+        if not table_exists(conn_dest, args.dest_catalog, args.schema_name, table_name):
+            create_table(conn_source, conn_dest, args.source_catalog, args.dest_catalog, args.schema_name, table_name, args.dry_run)
+        else:
+            print(f"Table {table_name} already exists. Skipping.")
 
-    print("Replication completed successfully.")
-
-def replicate_single_table(conn_source, conn_dest, schema_name, table_name):
-    if not table_exists(conn_dest, schema_name, table_name):
-        create_table(conn_source, conn_dest, schema_name, table_name)
-        print(f"Table '{table_name}' created.")
-    else:
-        print(f"Table '{table_name}' already exists. Skipping.")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(replicate, table) for table in tables_to_replicate]
+        for i, f in enumerate(concurrent.futures.as_completed(futures), 1):
+            print(f"[{i}/{total_tables}] Table processed.")
 
 if __name__ == "__main__":
-    from trino.auth import BasicAuthentication
     main()
