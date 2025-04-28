@@ -9,6 +9,8 @@ pipeline {
     parameters {
         string(name: 'SOURCE_TRINO', description: 'Source Trino Host')
         string(name: 'DEST_TRINO', description: 'Destination Trino Host')
+        string(name: 'SOURCE_CATALOG', description: 'Source Catalog Name')
+        string(name: 'DEST_CATALOG', description: 'Destination Catalog Name')
         string(name: 'SCHEMA_NAME', description: 'Schema name to replicate')
         booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Dry run mode?')
     }
@@ -34,6 +36,8 @@ pipeline {
                           --dest_trino_host $DEST_TRINO \
                           --username $TRINO_USER \
                           --password $TRINO_PASSWORD \
+                          --source_catalog $SOURCE_CATALOG \
+                          --dest_catalog $DEST_CATALOG \
                           --schema_name $SCHEMA_NAME \
                           --dry_run $DRY_RUN \
                           --artifacts_path $ARTIFACTS_PATH"
