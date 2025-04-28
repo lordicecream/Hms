@@ -2,7 +2,6 @@ pipeline {
     agent none  // We'll define the agent explicitly, using a Docker container in a script block
 
     parameters {
-        string(name: 'GIT_REPO', defaultValue: '', description: 'Git repository URL')
         string(name: 'BRANCH', defaultValue: 'master', description: 'Branch to use for the replication')
         booleanParam(name: 'FULL_REPLICATION', defaultValue: true, description: 'Full Schema Replication')
         string(name: 'ARTIFACTS_PATH', defaultValue: '', description: 'Path to artifacts if partial replication is required')
@@ -15,6 +14,8 @@ pipeline {
     }
 
     environment {
+        // Define Git repository URL as an environment variable
+        GIT_REPO_URL = 'https://github.com/your-org/trino-replicate.git'  // Update with your actual repo URL
         TRINO_USERNAME = ''
         TRINO_PASSWORD = ''
     }
@@ -49,12 +50,12 @@ pipeline {
         stage('Git Clone') {
             steps {
                 script {
-                    echo "Cloning repository: ${params.GIT_REPO}, Branch: ${params.BRANCH}"
+                    echo "Cloning repository: ${GIT_REPO_URL}, Branch: ${params.BRANCH}"
 
-                    // Run Docker container to clone the repository using credentials
+                    // Clone the repository using Git credentials
                     withCredentials([usernamePassword(credentialsId: 'git_credentials_id', passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
                         sh """
-                            docker run --rm -v \$(pwd):/workspace python:3.8 bash -c 'cd /workspace && git clone https://$GIT_USERNAME:$GIT_PASSWORD@${params.GIT_REPO} --branch ${params.BRANCH}'
+                            git clone https://$GIT_USERNAME:$GIT_PASSWORD@${GIT_REPO_URL} --branch ${params.BRANCH}
                         """
                     }
                 }
