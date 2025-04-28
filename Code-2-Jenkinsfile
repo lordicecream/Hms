@@ -1,98 +1,96 @@
 pipeline {
-    agent none  // We'll define the agent explicitly, using a Docker container in a script block
-
-    parameters {
-        string(name: 'BRANCH', defaultValue: 'master', description: 'Branch to use for the replication')
-        booleanParam(name: 'FULL_REPLICATION', defaultValue: true, description: 'Full Schema Replication')
-        string(name: 'ARTIFACTS_PATH', defaultValue: '', description: 'Path to artifacts if partial replication is required')
-        string(name: 'SOURCE_TRINO_HOST', defaultValue: '', description: 'Source Trino Host')
-        string(name: 'DEST_TRINO_HOST', defaultValue: '', description: 'Destination Trino Host')
-        string(name: 'SOURCE_CATALOG', defaultValue: '', description: 'Source Trino Catalog')
-        string(name: 'DEST_CATALOG', defaultValue: '', description: 'Destination Trino Catalog')
-        string(name: 'SCHEMA_NAME', defaultValue: '', description: 'The schema name to replicate')
-        booleanParam(name: 'DRY_RUN', defaultValue: false, description: 'Dry-run mode (no actual changes)')
-    }
-
+    agent any
     environment {
-        // Define Git repository URL as an environment variable
-        GIT_REPO_URL = 'https://github.com/your-org/trino-replicate.git'  // Update with your actual repo URL
-        TRINO_USERNAME = ''
-        TRINO_PASSWORD = ''
+        GIT_REPO_URL = 'https://your-repo-url.git'
+        GIT_CREDENTIALS_ID = 'your-credentials-id'
+        DOCKER_IMAGE = 'your-docker-image'
+        WORKSPACE_DIR = "${env.WORKSPACE}"
     }
-
+    parameters {
+        string(name: 'BRANCH', defaultValue: 'master', description: 'Branch to use for the git clone')
+        string(name: 'SOURCE_TRINO_HOST', description: 'Source Trino host')
+        string(name: 'DEST_TRINO_HOST', description: 'Destination Trino host')
+        string(name: 'SOURCE_CATALOG', description: 'Source catalog name')
+        string(name: 'DEST_CATALOG', description: 'Destination catalog name')
+        string(name: 'SCHEMA_NAME', description: 'Schema to replicate')
+        booleanParam(name: 'FULL_REPLICATION', defaultValue: true, description: 'Is full schema replication required?')
+        string(name: 'ARTIFACTS_PATH', defaultValue: '', description: 'Artifacts path for partial replication (only required if FULL_REPLICATION is false)')
+        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Dry run the replication without executing it')
+    }
     stages {
-        stage('Validate Parameters') {
-            steps {
-                script {
-                    // Check if FULL_REPLICATION is false and ARTIFACTS_PATH is set
-                    if (!params.FULL_REPLICATION && params.ARTIFACTS_PATH?.trim()) {
-                        echo "Partial replication selected. Using artifacts from: ${params.ARTIFACTS_PATH}"
-                    } else if (params.FULL_REPLICATION) {
-                        echo "Full replication selected. Proceeding with full schema replication."
-                    } else {
-                        error("Artifacts path must be provided for partial replication.")
-                    }
-
-                    // Validate Trino host, catalog, and schema parameters
-                    if (!params.SOURCE_TRINO_HOST || !params.DEST_TRINO_HOST) {
-                        error("Both source and destination Trino hosts must be provided.")
-                    }
-                    if (!params.SOURCE_CATALOG || !params.DEST_CATALOG) {
-                        error("Both source and destination catalogs must be provided.")
-                    }
-                    if (!params.SCHEMA_NAME) {
-                        error("Schema name must be provided for replication.")
-                    }
-                }
-            }
-        }
-
         stage('Git Clone') {
             steps {
                 script {
-                    echo "Cloning repository: ${GIT_REPO_URL}, Branch: ${params.BRANCH}"
-
-                    // Clone the repository using Git credentials
-                    withCredentials([usernamePassword(credentialsId: 'git_credentials_id', passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
-                        sh """
-                            git clone https://$GIT_USERNAME:$GIT_PASSWORD@${GIT_REPO_URL} --branch ${params.BRANCH}
-                        """
-                    }
+                    // Clone the specified branch of the repo
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: "refs/heads/${params.BRANCH}"]],
+                        userRemoteConfigs: [[url: "${env.GIT_REPO_URL}", credentialsId: "${env.GIT_CREDENTIALS_ID}"]]
+                    ])
                 }
             }
         }
-
-        stage('Trino Schema Validation and Replication') {
+        stage('Load Trino Credentials') {
             steps {
                 script {
-                    echo "Validating source and destination Trino catalogs and schemas..."
-
-                    // Run Docker container to execute the Python replication script
-                    withCredentials([usernamePassword(credentialsId: 'trino_credentials', passwordVariable: 'TRINO_PASSWORD', usernameVariable: 'TRINO_USERNAME')]) {
-                        sh """
-                            docker run --rm -v \$(pwd):/workspace python:3.8 bash -c '
-                                cd /workspace && python3 replicate_trino_schema.py \
-                                --source-trino-host ${params.SOURCE_TRINO_HOST} \
-                                --dest-trino-host ${params.DEST_TRINO_HOST} \
-                                --source-catalog ${params.SOURCE_CATALOG} \
-                                --dest-catalog ${params.DEST_CATALOG} \
-                                --schema-name ${params.SCHEMA_NAME} \
-                                --username $TRINO_USERNAME \
-                                --password $TRINO_PASSWORD \
-                                --full-replication ${params.FULL_REPLICATION} \
-                                --artifacts-path ${params.ARTIFACTS_PATH} \
-                                --dry-run ${params.DRY_RUN}'
-                        """
+                    // Load Trino credentials from Jenkins Credentials Store
+                    def trinoCredentials = withCredentials([usernamePassword(credentialsId: 'trino-credentials-id', usernameVariable: 'TRINO_USERNAME', passwordVariable: 'TRINO_PASSWORD')]) {
+                        return [TRINO_USERNAME, TRINO_PASSWORD]
                     }
+                    // Store credentials as environment variables
+                    env.TRINO_USERNAME = trinoCredentials[0]
+                    env.TRINO_PASSWORD = trinoCredentials[1]
+                }
+            }
+        }
+        stage('Copy Files to Docker Container') {
+            steps {
+                script {
+                    // Copy everything from Jenkins workspace to the Docker container
+                    sh """
+                        # Run a temporary container in the background
+                        docker run --rm -d --name temp_container ${env.DOCKER_IMAGE} tail -f /dev/null
+
+                        # Copy the contents of the Jenkins workspace to the Docker container
+                        docker cp ${env.WORKSPACE}/ temp_container:/workspace
+
+                        # Stop the container after the copy is done
+                        docker stop temp_container
+                    """
+                }
+            }
+        }
+        stage('Run Python Script Inside Docker') {
+            steps {
+                script {
+                    // Set the artifacts path only if FULL_REPLICATION is false
+                    def artifactsPathArg = params.FULL_REPLICATION ? "" : "--artifacts_path ${params.ARTIFACTS_PATH}"
+
+                    // Run the Python script inside the Docker container
+                    sh """
+                        docker run --rm \\
+                            -e TRINO_USERNAME=${env.TRINO_USERNAME} \\
+                            -e TRINO_PASSWORD=${env.TRINO_PASSWORD} \\
+                            -v ${env.WORKSPACE}/:/workspace \\
+                            ${env.DOCKER_IMAGE} \\
+                            python3 /workspace/trino_replicate.py \\
+                            --source_trino_host ${params.SOURCE_TRINO_HOST} \\
+                            --dest_trino_host ${params.DEST_TRINO_HOST} \\
+                            --username ${env.TRINO_USERNAME} \\
+                            --password ${env.TRINO_PASSWORD} \\
+                            --source_catalog ${params.SOURCE_CATALOG} \\
+                            --dest_catalog ${params.DEST_CATALOG} \\
+                            --schema_name ${params.SCHEMA_NAME} \\
+                            --dry_run ${params.DRY_RUN} \\
+                            ${artifactsPathArg}
+                    """
                 }
             }
         }
     }
-
     post {
         always {
-            echo "Cleaning up workspace..."
-            cleanWs()  // Clean workspace after every run
+            cleanWs()  // Clean workspace after the job is complete
         }
     }
 }
