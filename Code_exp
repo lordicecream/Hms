@@ -1,0 +1,181 @@
+# --- IMPORTS SECTION ---
+# Importing necessary Python libraries
+import trino  # Trino Python client for connecting and running SQL
+import argparse  # Library to parse command-line arguments
+import os  # To work with file paths and environment
+from concurrent.futures import ThreadPoolExecutor, as_completed  # To run multiple operations in parallel
+from tqdm import tqdm  # To show nice progress bars
+
+# --- CONNECTION SETUP FUNCTION ---
+def get_trino_connection(host, username, password):
+    """
+    Creates a secure Trino connection using basic authentication.
+    """
+    return trino.dbapi.connect(
+        host=host,  # Trino server hostname
+        port=443,  # Default HTTPS port for Trino
+        user=username,  # Username for authentication
+        auth=trino.auth.BasicAuthentication(username, password),  # Password authentication
+        http_scheme="https",  # Use HTTPS
+        verify=False  # Do not verify SSL certs (for internal use)
+    )
+
+# --- HELPER FUNCTION: Check if a catalog exists ---
+def catalog_exists(cursor, catalog_name):
+    """
+    Checks if the given catalog exists in Trino.
+    """
+    cursor.execute("SHOW CATALOGS")  # Query to list all catalogs
+    catalogs = [row[0] for row in cursor.fetchall()]  # Extract catalog names from query result
+    return catalog_name in catalogs  # Return True if the catalog is found
+
+# --- HELPER FUNCTION: Check if a schema exists ---
+def schema_exists(cursor, catalog, schema):
+    """
+    Checks if a schema exists inside a catalog.
+    """
+    cursor.execute(f"SHOW SCHEMAS FROM {catalog}")  # Query schemas in given catalog
+    schemas = [row[0] for row in cursor.fetchall()]  # Extract schema names
+    return schema in schemas  # True if schema found
+
+# --- HELPER FUNCTION: Check if a table exists ---
+def table_exists(cursor, catalog, schema, table):
+    """
+    Checks if a specific table exists inside a given schema and catalog.
+    """
+    cursor.execute(f"SHOW TABLES FROM {catalog}.{schema}")  # Query tables
+    tables = [row[0] for row in cursor.fetchall()]  # Extract table names
+    return table in tables  # True if table found
+
+# --- SCHEMA REPLICATION FUNCTION ---
+def replicate_schema(source_cursor, dest_cursor, source_catalog, dest_catalog, schema, dry_run):
+    """
+    Replicates a schema from source to destination.
+    - If dry_run is True: only prints the SQL that would be run.
+    - If dry_run is False: actually creates the schema.
+    """
+    if not schema_exists(dest_cursor, dest_catalog, schema):  # Check if schema already exists in destination
+        source_cursor.execute(f"SHOW CREATE SCHEMA {source_catalog}.{schema}")  # Get the SQL to recreate schema
+        create_schema_sql = source_cursor.fetchone()[0]  # Extract the create schema SQL statement
+        create_schema_sql = create_schema_sql.replace(source_catalog, dest_catalog)  # Adjust SQL for destination catalog
+        
+        if dry_run:  # --- DRY RUN MODE ---
+            print(f"[DRY RUN] Schema '{schema}' does not exist in destination '{dest_catalog}'. Would execute:")
+            print(create_schema_sql)
+        else:  # --- ACTUAL RUN ---
+            dest_cursor.execute(create_schema_sql)  # Execute the CREATE SCHEMA SQL
+            print(f"[INFO] Schema '{schema}' created in destination '{dest_catalog}'.")
+    else:
+        print(f"[INFO] Schema '{schema}' already exists in '{dest_catalog}'.")
+
+# --- TABLE REPLICATION FUNCTION ---
+def replicate_table(source_cursor, dest_cursor, source_catalog, dest_catalog, schema, table, dry_run):
+    """
+    Replicates a single table from source to destination.
+    - If dry_run is True: prints what would be done.
+    - If dry_run is False: actually copies the table.
+    """
+    if not table_exists(dest_cursor, dest_catalog, schema, table):  # If table does not exist
+        source_cursor.execute(f"SHOW CREATE TABLE {source_catalog}.{schema}.{table}")  # Get the create table SQL
+        create_table_sql = source_cursor.fetchone()[0]  # Fetch SQL
+        create_table_sql = create_table_sql.replace(source_catalog, dest_catalog)  # Adjust SQL for destination catalog
+        
+        if dry_run:  # --- DRY RUN ---
+            print(f"[DRY RUN] Table '{schema}.{table}' does not exist. Would create with SQL.")
+        else:  # --- ACTUAL RUN ---
+            dest_cursor.execute(create_table_sql)  # Run the SQL
+            print(f"[INFO] Table '{schema}.{table}' created.")
+    else:
+        print(f"[INFO] Table '{schema}.{table}' already exists in '{dest_catalog}'.")
+
+# --- FUNCTION TO LIST TABLES TO REPLICATE ---
+def get_tables_list(cursor, catalog, schema, artifacts_path):
+    """
+    Determines which tables need to be replicated.
+    - If an artifact file (pre-listed tables) exists, it uses that list.
+    - Otherwise, queries Trino directly to get all tables.
+    """
+    artifact_file = os.path.join(artifacts_path, f"{schema}_tables.txt")  # Build path to artifact file
+    
+    if os.path.exists(artifact_file):  # If file exists
+        with open(artifact_file, "r") as f:
+            tables = [line.strip() for line in f if line.strip()]  # Read and clean table names
+        print(f"[INFO] Using list of tables from artifact file: {artifact_file}")
+    else:
+        cursor.execute(f"SHOW TABLES FROM {catalog}.{schema}")  # Query all tables
+        tables = [row[0] for row in cursor.fetchall()]  # Extract table names
+        print(f"[INFO] No artifact file found. Replicating all tables in schema '{schema}'.")
+    
+    return tables  # Return list of tables
+
+# --- MAIN DRIVER FUNCTION ---
+def main():
+    """
+    Main function that coordinates the replication process.
+    Steps:
+    1. Parse command line arguments.
+    2. Connect to source and destination Trino.
+    3. Validate that source and destination catalogs exist.
+    4. Replicate the schema.
+    5. Replicate each table (with a nice progress bar).
+    """
+    # Setup parser for command-line arguments
+    parser = argparse.ArgumentParser()
+    
+    # Add all required arguments
+    parser.add_argument("--source_trino_host", required=True)
+    parser.add_argument("--dest_trino_host", required=True)
+    parser.add_argument("--username", required=True)
+    parser.add_argument("--password", required=True)
+    parser.add_argument("--source_catalog", required=True, help="Catalog to read from")
+    parser.add_argument("--dest_catalog", required=True, help="Catalog to write to")
+    parser.add_argument("--schema_name", required=True, help="Schema to replicate")
+    parser.add_argument("--dry_run", type=bool, default=True, help="True = Only show what would happen. False = Actually execute.")
+    parser.add_argument("--artifacts_path", type=str, default="./artifact", help="Path where table lists are saved")
+
+    args = parser.parse_args()  # Parse arguments
+
+    # Establish Trino connections
+    source_conn = get_trino_connection(args.source_trino_host, args.username, args.password)  # Connect to source
+    dest_conn = get_trino_connection(args.dest_trino_host, args.username, args.password)  # Connect to destination
+
+    source_cursor = source_conn.cursor()  # Create cursor to interact with source
+    dest_cursor = dest_conn.cursor()  # Create cursor to interact with destination
+
+    # Validate that source and destination catalogs exist
+    if not catalog_exists(source_cursor, args.source_catalog):
+        raise Exception(f"[ERROR] Source catalog '{args.source_catalog}' does not exist!")
+    
+    if not catalog_exists(dest_cursor, args.dest_catalog):
+        raise Exception(f"[ERROR] Destination catalog '{args.dest_catalog}' does not exist!")
+
+    # Replicate the schema
+    replicate_schema(source_cursor, dest_cursor, args.source_catalog, args.dest_catalog, args.schema_name, args.dry_run)
+
+    # Get the list of tables to replicate
+    tables = get_tables_list(source_cursor, args.source_catalog, args.schema_name, args.artifacts_path)
+
+    # Use ThreadPoolExecutor to replicate tables in parallel
+    with ThreadPoolExecutor(max_workers=3) as executor:  # Using 3 threads
+        # Submit each table replication task
+        futures = [
+            executor.submit(
+                replicate_table,
+                source_cursor,
+                dest_cursor,
+                args.source_catalog,
+                args.dest_catalog,
+                args.schema_name,
+                table,
+                args.dry_run
+            )
+            for table in tables
+        ]
+        
+        # Track progress with tqdm
+        for _ in tqdm(as_completed(futures), total=len(futures), desc="Replicating tables"):
+            pass  # Nothing to do here; tqdm updates automatically
+
+# --- ENTRY POINT ---
+if __name__ == "__main__":
+    main()
