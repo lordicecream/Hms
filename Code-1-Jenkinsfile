@@ -1,49 +1,91 @@
 pipeline {
-    agent {
-        docker {
-            image 'python:3.10-slim'
-            args '-u root:root' // Run as root so we can install packages
-        }
-    }
+    agent any
+
     environment {
-        SOURCE_TRINO = '' // Will be populated from input
-        DEST_TRINO = ''   // Will be populated from input
+        GIT_URL = 'https://your.git.repo.url/your-repo.git'
+        DOCKER_IMAGE = 'python:3.8-slim'  // Or whatever Python base image you want
+        CONTAINER_NAME = 'trino-replicate-container'
     }
+
     parameters {
-        string(name: 'SOURCE_TRINO', description: 'Source Trino Host URL (eg. https://trino-source.host)')
-        string(name: 'DEST_TRINO', description: 'Destination Trino Host URL (eg. https://trino-dest.host)')
-        string(name: 'SOURCE_CATALOG', defaultValue: 'hmsa', description: 'Source Catalog Name')
-        string(name: 'DEST_CATALOG', defaultValue: 'hmsb', description: 'Destination Catalog Name')
-        string(name: 'SCHEMA_NAME', description: 'Schema to replicate (eg. abc)')
-        choice(name: 'FULL_SCHEMA_REPLICATE', choices: ['yes', 'no'], description: 'Replicate full schema or only selected tables?')
-        string(name: 'GIT_BRANCH', defaultValue: 'master', description: 'Git branch to use')
+        string(name: 'BRANCH', defaultValue: 'main', description: 'Branch to build')
+        booleanParam(name: 'FULL_REPLICATION', defaultValue: true, description: 'Full replication or not')
+        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Dry run mode')
+        string(name: 'SOURCE_CATALOG', defaultValue: '', description: 'Source catalog name')
+        string(name: 'DEST_CATALOG', defaultValue: '', description: 'Destination catalog name')
+        string(name: 'SCHEMA_NAME', defaultValue: '', description: 'Schema name to replicate')
+        string(name: 'ARTIFACTS_PATH', defaultValue: '', description: 'Path to artifacts', trim: true)
     }
+
     stages {
+
         stage('Checkout Code') {
             steps {
-                git branch: params.GIT_BRANCH, credentialsId: 'git-credentials', url: 'https://your-git-server.com/your-repo/trino-replicate.git'
+                git branch: "${params.BRANCH}", url: "${env.GIT_URL}"
             }
         }
-        stage('Install Python Packages') {
+
+        stage('Load Trino Credentials') {
             steps {
-                sh 'pip install trino'
+                withCredentials([usernamePassword(credentialsId: 'trino-credentials-id', usernameVariable: 'TRINO_USERNAME', passwordVariable: 'TRINO_PASSWORD')]) {
+                    script {
+                        env.TRINO_USERNAME = TRINO_USERNAME
+                        env.TRINO_PASSWORD = TRINO_PASSWORD
+                    }
+                }
             }
         }
-        stage('Run Metadata Replication') {
+
+        stage('Start Docker Container') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'trino-credentials', usernameVariable: 'TRINO_USER', passwordVariable: 'TRINO_PASS')]) {
+                script {
                     sh """
-                        python replicate_metadata.py \
-                            --source_host ${params.SOURCE_TRINO} \
-                            --dest_host ${params.DEST_TRINO} \
+                        docker run -dit --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE} bash
+                    """
+                }
+            }
+        }
+
+        stage('Copy replicate-job into Container') {
+            steps {
+                script {
+                    sh """
+                        docker cp jenkins/trino/replicate-job/. ${env.CONTAINER_NAME}:/replicate-job
+                    """
+                }
+            }
+        }
+
+        stage('Run Python Script inside Container') {
+            steps {
+                script {
+                    def artifactsPathArg = ''
+                    if (!params.FULL_REPLICATION && params.ARTIFACTS_PATH?.trim()) {
+                        artifactsPathArg = "--artifacts_path ${params.ARTIFACTS_PATH}"
+                    }
+                    sh """
+                        docker exec ${env.CONTAINER_NAME} pip install trino tqdm
+                        docker exec ${env.CONTAINER_NAME} python /replicate-job/trino_replicate.py \
+                            --source_trino_host source-trino-host.com \
+                            --dest_trino_host dest-trino-host.com \
+                            --username ${env.TRINO_USERNAME} \
+                            --password ${env.TRINO_PASSWORD} \
                             --source_catalog ${params.SOURCE_CATALOG} \
                             --dest_catalog ${params.DEST_CATALOG} \
                             --schema_name ${params.SCHEMA_NAME} \
-                            --full_schema_replicate ${params.FULL_SCHEMA_REPLICATE} \
-                            --username $TRINO_USER \
-                            --password $TRINO_PASS
+                            --dry_run ${params.DRY_RUN} \
+                            ${artifactsPathArg}
                     """
                 }
+            }
+        }
+
+    }
+
+    post {
+        always {
+            script {
+                sh "docker rm -f ${env.CONTAINER_NAME} || true"
             }
         }
     }
