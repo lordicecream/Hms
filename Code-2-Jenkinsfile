@@ -1,55 +1,44 @@
 pipeline {
     agent any
-
     environment {
-        GIT_CREDENTIALS_ID = 'your-git-credentials-id'
-        TRINO_CREDENTIALS_ID = 'your-trino-credentials-id'
-        DOCKER_IMAGE = 'python:3.9-slim'  // or whichever lightweight python image you want
+        GIT_REPO_URL = 'https://your-git-server/your-project/trino-replicate.git'
+        GIT_CREDENTIALS_ID = 'your-jenkins-git-creds-id'
+        TRINO_CREDENTIALS_ID = 'your-trino-username-password-credentials-id'
+        ARTIFACTS_PATH = './artifact'
     }
-
     parameters {
-        string(name: 'SOURCE_TRINO_HOST', description: 'Source Trino Host')
-        string(name: 'DEST_TRINO_HOST', description: 'Destination Trino Host')
-        string(name: 'SOURCE_CATALOG', description: 'Source Catalog')
-        string(name: 'DEST_CATALOG', description: 'Destination Catalog')
-        string(name: 'SCHEMA_NAME', description: 'Schema to replicate')
-        choice(name: 'FULL_SCHEMA_REPLICATE', choices: ['yes', 'no'], description: 'Replicate full schema or selective tables?')
-        choice(name: 'DRY_RUN', choices: ['true', 'false'], description: 'Dry Run or Actual Execution?')
+        string(name: 'SOURCE_TRINO', description: 'Source Trino Host')
+        string(name: 'DEST_TRINO', description: 'Destination Trino Host')
+        string(name: 'SCHEMA_NAME', description: 'Schema name to replicate')
+        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Dry run mode?')
     }
-
     stages {
         stage('Checkout') {
             steps {
-                git credentialsId: "${GIT_CREDENTIALS_ID}", url: 'https://your-git-repo-url/trino-replicate.git', branch: 'master'
+                git branch: 'master',
+                    url: "${env.GIT_REPO_URL}",
+                    credentialsId: "${env.GIT_CREDENTIALS_ID}"
             }
         }
-
-        stage('Fetch Trino Credentials') {
+        stage('Prepare') {
             steps {
-                withCredentials([usernamePassword(credentialsId: "${TRINO_CREDENTIALS_ID}", usernameVariable: 'TRINO_USER', passwordVariable: 'TRINO_PASSWORD')]) {
+                withCredentials([usernamePassword(credentialsId: "${env.TRINO_CREDENTIALS_ID}", usernameVariable: 'TRINO_USER', passwordVariable: 'TRINO_PASSWORD')]) {
                     sh '''
-                        echo "Fetched Trino credentials"
+                        docker run --rm \
+                        -v $PWD:/app \
+                        -w /app \
+                        python:3.9-slim \
+                        sh -c "pip install trino tqdm && \
+                        python3 replicate_trino.py \
+                          --source_trino_host $SOURCE_TRINO \
+                          --dest_trino_host $DEST_TRINO \
+                          --username $TRINO_USER \
+                          --password $TRINO_PASSWORD \
+                          --schema_name $SCHEMA_NAME \
+                          --dry_run $DRY_RUN \
+                          --artifacts_path $ARTIFACTS_PATH"
                     '''
                 }
-            }
-        }
-
-        stage('Run Replication Script') {
-            steps {
-                sh """
-                    docker pull ${DOCKER_IMAGE}
-                    docker run --rm -v "$PWD":/app -w /app ${DOCKER_IMAGE} \
-                    python3 replicate_trino.py \
-                        --source_trino_host "${SOURCE_TRINO_HOST}" \
-                        --dest_trino_host "${DEST_TRINO_HOST}" \
-                        --source_catalog "${SOURCE_CATALOG}" \
-                        --dest_catalog "${DEST_CATALOG}" \
-                        --schema_name "${SCHEMA_NAME}" \
-                        --full_schema_replicate "${FULL_SCHEMA_REPLICATE}" \
-                        --username "${TRINO_USER}" \
-                        --password "${TRINO_PASSWORD}" \
-                        --dry_run "${DRY_RUN}"
-                """
             }
         }
     }
