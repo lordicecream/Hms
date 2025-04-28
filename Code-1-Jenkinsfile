@@ -2,36 +2,30 @@ pipeline {
     agent any
 
     environment {
-        GIT_URL = 'https://your.git.repo.url/your-repo.git'
-        DOCKER_IMAGE = 'python:3.8-slim'  // Or whatever Python base image you want
-        CONTAINER_NAME = 'trino-replicate-container'
+        GIT_REPO_URL = 'https://your.git.repo.url/your-repo.git'
+        DOCKER_IMAGE = 'python:3.8-slim'
+        CONTAINER_NAME = 'replicate-job-container'
     }
 
     parameters {
-        string(name: 'BRANCH', defaultValue: 'main', description: 'Branch to build')
-        booleanParam(name: 'FULL_REPLICATION', defaultValue: true, description: 'Full replication or not')
-        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Dry run mode')
-        string(name: 'SOURCE_CATALOG', defaultValue: '', description: 'Source catalog name')
-        string(name: 'DEST_CATALOG', defaultValue: '', description: 'Destination catalog name')
-        string(name: 'SCHEMA_NAME', defaultValue: '', description: 'Schema name to replicate')
-        string(name: 'ARTIFACTS_PATH', defaultValue: '', description: 'Path to artifacts', trim: true)
+        string(name: 'BRANCH_NAME', description: 'Branch to clone', defaultValue: 'main')
+        string(name: 'SOURCE_TRINO_HOST', description: 'Source Trino Host')
+        string(name: 'DEST_TRINO_HOST', description: 'Destination Trino Host')
+        string(name: 'SOURCE_CATALOG', description: 'Source Catalog')
+        string(name: 'DEST_CATALOG', description: 'Destination Catalog')
+        string(name: 'SCHEMA_NAME', description: 'Schema to replicate')
+        booleanParam(name: 'FULL_REPLICATION', defaultValue: true, description: 'Full Replication?')
+        string(name: 'ARTIFACTS_PATH', defaultValue: '', description: 'Artifacts Path (required if FULL_REPLICATION=false)')
+        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Dry Run mode?')
     }
 
     stages {
-
-        stage('Checkout Code') {
+        stage('Checkout') {
             steps {
-                git branch: "${params.BRANCH}", url: "${env.GIT_URL}"
-            }
-        }
-
-        stage('Load Trino Credentials') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'trino-credentials-id', usernameVariable: 'TRINO_USERNAME', passwordVariable: 'TRINO_PASSWORD')]) {
-                    script {
-                        env.TRINO_USERNAME = TRINO_USERNAME
-                        env.TRINO_PASSWORD = TRINO_PASSWORD
-                    }
+                withCredentials([usernamePassword(credentialsId: 'your-git-credentials-id', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
+                    sh """
+                        git clone --branch ${params.BRANCH_NAME} https://${GIT_USERNAME}:${GIT_PASSWORD}@${GIT_REPO_URL.replace('https://', '')} repo
+                    """
                 }
             }
         }
@@ -40,52 +34,54 @@ pipeline {
             steps {
                 script {
                     sh """
-                        docker run -dit --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE} bash
+                        docker run -dit --name ${CONTAINER_NAME} ${DOCKER_IMAGE} bash
                     """
                 }
             }
         }
 
-        stage('Copy replicate-job into Container') {
+        stage('Copy Files to Docker Container') {
             steps {
                 script {
                     sh """
-                        docker cp jenkins/trino/replicate-job/. ${env.CONTAINER_NAME}:/replicate-job
+                        docker cp repo/jenkins/trino/replicate-job ${CONTAINER_NAME}:/replicate-job
                     """
                 }
             }
         }
 
-        stage('Run Python Script inside Container') {
+        stage('Run Replication Script') {
             steps {
-                script {
-                    def artifactsPathArg = ''
-                    if (!params.FULL_REPLICATION && params.ARTIFACTS_PATH?.trim()) {
-                        artifactsPathArg = "--artifacts_path ${params.ARTIFACTS_PATH}"
+                withCredentials([usernamePassword(credentialsId: 'trino-credentials-id', usernameVariable: 'TRINO_USERNAME', passwordVariable: 'TRINO_PASSWORD')]) {
+                    script {
+                        def artifactsArg = ''
+                        if (!params.FULL_REPLICATION && params.ARTIFACTS_PATH?.trim()) {
+                            artifactsArg = "--artifacts_path /replicate-job/artifacts"
+                        }
+                        
+                        sh """
+                            docker exec ${CONTAINER_NAME} python /replicate-job/trino_replicate.py \
+                                --source_trino_host ${params.SOURCE_TRINO_HOST} \
+                                --dest_trino_host ${params.DEST_TRINO_HOST} \
+                                --username ${TRINO_USERNAME} \
+                                --password ${TRINO_PASSWORD} \
+                                --source_catalog ${params.SOURCE_CATALOG} \
+                                --dest_catalog ${params.DEST_CATALOG} \
+                                --schema_name ${params.SCHEMA_NAME} \
+                                --dry_run ${params.DRY_RUN} \
+                                ${artifactsArg}
+                        """
                     }
-                    sh """
-                        docker exec ${env.CONTAINER_NAME} pip install trino tqdm
-                        docker exec ${env.CONTAINER_NAME} python /replicate-job/trino_replicate.py \
-                            --source_trino_host source-trino-host.com \
-                            --dest_trino_host dest-trino-host.com \
-                            --username ${env.TRINO_USERNAME} \
-                            --password ${env.TRINO_PASSWORD} \
-                            --source_catalog ${params.SOURCE_CATALOG} \
-                            --dest_catalog ${params.DEST_CATALOG} \
-                            --schema_name ${params.SCHEMA_NAME} \
-                            --dry_run ${params.DRY_RUN} \
-                            ${artifactsPathArg}
-                    """
                 }
             }
         }
-
     }
 
     post {
         always {
             script {
-                sh "docker rm -f ${env.CONTAINER_NAME} || true"
+                sh "docker stop ${CONTAINER_NAME} || true"
+                sh "docker rm ${CONTAINER_NAME} || true"
             }
         }
     }
