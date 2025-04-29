@@ -1,88 +1,94 @@
 pipeline {
     agent any
-
     environment {
-        GIT_REPO_URL = 'https://your.git.repo.url/your-repo.git'
-        DOCKER_IMAGE = 'python:3.8-slim'
-        CONTAINER_NAME = 'replicate-job-container'
+        GIT_REPO_URL = 'https://your-repo-url.git'
+        GIT_CREDENTIALS_ID = 'your-credentials-id'
+        DOCKER_IMAGE = 'your-docker-image'
+        WORKSPACE_DIR = "${env.WORKSPACE}"
     }
-
     parameters {
-        string(name: 'BRANCH_NAME', description: 'Branch to clone', defaultValue: 'main')
-        string(name: 'SOURCE_TRINO_HOST', description: 'Source Trino Host')
-        string(name: 'DEST_TRINO_HOST', description: 'Destination Trino Host')
-        string(name: 'SOURCE_CATALOG', description: 'Source Catalog')
-        string(name: 'DEST_CATALOG', description: 'Destination Catalog')
+        string(name: 'BRANCH', defaultValue: 'master', description: 'Branch to use for the git clone')
+        string(name: 'SOURCE_TRINO_HOST', description: 'Source Trino host')
+        string(name: 'DEST_TRINO_HOST', description: 'Destination Trino host')
+        string(name: 'SOURCE_CATALOG', description: 'Source catalog name')
+        string(name: 'DEST_CATALOG', description: 'Destination catalog name')
         string(name: 'SCHEMA_NAME', description: 'Schema to replicate')
-        booleanParam(name: 'FULL_REPLICATION', defaultValue: true, description: 'Full Replication?')
-        string(name: 'ARTIFACTS_PATH', defaultValue: '', description: 'Artifacts Path (required if FULL_REPLICATION=false)')
-        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Dry Run mode?')
+        booleanParam(name: 'FULL_REPLICATION', defaultValue: true, description: 'Set to true for full schema replication. Set to false to replicate only selected tables.')
+        string(
+            name: 'ARTIFACT_FILE_NAME',
+            defaultValue: '',
+            description: 'Required only if FULL_REPLICATION is false. Place file inside "jenkins/trino/replicate-job/artifacts/". File name must follow "<schema_name>_tables.txt".'
+        )
+        booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Dry run the replication without executing it')
     }
-
     stages {
-        stage('Checkout') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'your-git-credentials-id', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
-                    sh """
-                        git clone --branch ${params.BRANCH_NAME} https://${GIT_USERNAME}:${GIT_PASSWORD}@${GIT_REPO_URL.replace('https://', '')} repo
-                    """
-                }
-            }
-        }
-
-        stage('Start Docker Container') {
+        stage('Git Clone') {
             steps {
                 script {
-                    sh """
-                        docker run -dit --name ${CONTAINER_NAME} ${DOCKER_IMAGE} bash
-                    """
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: "refs/heads/${params.BRANCH}"]],
+                        userRemoteConfigs: [[url: "${env.GIT_REPO_URL}", credentialsId: "${env.GIT_CREDENTIALS_ID}"]]
+                    ])
                 }
             }
         }
-
-        stage('Copy Files to Docker Container') {
+        stage('Validate Artifact File') {
+            when {
+                expression { return !params.FULL_REPLICATION }
+            }
             steps {
                 script {
-                    sh """
-                        docker cp repo/jenkins/trino/replicate-job ${CONTAINER_NAME}:/replicate-job
-                    """
-                }
-            }
-        }
-
-        stage('Run Replication Script') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'trino-credentials-id', usernameVariable: 'TRINO_USERNAME', passwordVariable: 'TRINO_PASSWORD')]) {
-                    script {
-                        def artifactsArg = ''
-                        if (!params.FULL_REPLICATION && params.ARTIFACTS_PATH?.trim()) {
-                            artifactsArg = "--artifacts_path /replicate-job/artifacts"
-                        }
-                        
-                        sh """
-                            docker exec ${CONTAINER_NAME} python /replicate-job/trino_replicate.py \
-                                --source_trino_host ${params.SOURCE_TRINO_HOST} \
-                                --dest_trino_host ${params.DEST_TRINO_HOST} \
-                                --username ${TRINO_USERNAME} \
-                                --password ${TRINO_PASSWORD} \
-                                --source_catalog ${params.SOURCE_CATALOG} \
-                                --dest_catalog ${params.DEST_CATALOG} \
-                                --schema_name ${params.SCHEMA_NAME} \
-                                --dry_run ${params.DRY_RUN} \
-                                ${artifactsArg}
-                        """
+                    if (!params.ARTIFACT_FILE_NAME) {
+                        error("ARTIFACT_FILE_NAME is required when FULL_REPLICATION is false.")
                     }
+                    def expectedPath = "jenkins/trino/replicate-job/artifacts/${params.ARTIFACT_FILE_NAME}"
+                    if (!fileExists(expectedPath)) {
+                        error("Expected artifact file '${expectedPath}' not found. Ensure the file is correctly named and placed.")
+                    }
+                    env.ARTIFACTS_PATH = expectedPath
+                }
+            }
+        }
+        stage('Load Trino Credentials') {
+            steps {
+                script {
+                    def creds = withCredentials([usernamePassword(credentialsId: 'trino-credentials-id', usernameVariable: 'TRINO_USERNAME', passwordVariable: 'TRINO_PASSWORD')]) {
+                        return [TRINO_USERNAME, TRINO_PASSWORD]
+                    }
+                    env.TRINO_USERNAME = creds[0]
+                    env.TRINO_PASSWORD = creds[1]
+                }
+            }
+        }
+        stage('Run Replication in Docker') {
+            steps {
+                script {
+                    def artifactsArg = params.FULL_REPLICATION ? "" : "--artifacts_path ${env.ARTIFACTS_PATH}"
+                    sh """
+                        docker run --rm \\
+                            -e TRINO_USERNAME=${env.TRINO_USERNAME} \\
+                            -e TRINO_PASSWORD=${env.TRINO_PASSWORD} \\
+                            -v ${env.WORKSPACE}/jenkins/trino/replicate-job:/workspace \\
+                            ${env.DOCKER_IMAGE} \\
+                            python3 /workspace/replicate.py \\
+                            --source_trino_host ${params.SOURCE_TRINO_HOST} \\
+                            --dest_trino_host ${params.DEST_TRINO_HOST} \\
+                            --username ${env.TRINO_USERNAME} \\
+                            --password ${env.TRINO_PASSWORD} \\
+                            --source_catalog ${params.SOURCE_CATALOG} \\
+                            --dest_catalog ${params.DEST_CATALOG} \\
+                            --schema_name ${params.SCHEMA_NAME} \\
+                            --dry_run ${params.DRY_RUN} \\
+                            ${artifactsArg}
+                    """
                 }
             }
         }
     }
-
     post {
         always {
-            script {
-                sh "docker stop ${CONTAINER_NAME} || true"
-                sh "docker rm ${CONTAINER_NAME} || true"
-            }
+            cleanWs()
         }
     }
 }
