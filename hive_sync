@@ -3,7 +3,6 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
-
 def get_trino_connection(host, username, password):
     return trino.dbapi.connect(
         host=host,
@@ -14,28 +13,26 @@ def get_trino_connection(host, username, password):
         verify=False
     )
 
-
-def get_base_tables(cursor, catalog, schema):
-    query = f"""
-        SELECT table_name
-        FROM {catalog}.information_schema.tables
-        WHERE table_schema = '{schema}' AND table_type = 'BASE TABLE'
-    """
-    cursor.execute(query)
+def get_all_tables(trino_conn, catalog, schema):
+    cursor = trino_conn.cursor()
+    cursor.execute(f"SHOW TABLES FROM {catalog}.{schema}")
     return [row[0] for row in cursor.fetchall()]
 
-
-def sync_partition(cursor, catalog, schema, table, dry_run):
+def run_sync(table, host, username, password, catalog, schema, dry_run):
     query = (
-        f"CALL {catalog}.system.sync_partition_metadata("
-        f"'{schema}', '{table}', 'FULL', false)"
+        f"CALL system.sync_partition_metadata('{catalog}', '{schema}', '{table}', 'FULL', false)"
     )
     if dry_run:
         print(f"[Dry Run] Would run: {query}")
-    else:
+        return
+    try:
+        conn = get_trino_connection(host, username, password)
+        cursor = conn.cursor()
+        print(f"[Running] {catalog}.{schema}.{table}")
         cursor.execute(query)
-        return f"[INFO] Synced: {schema}.{table}"
-
+        print(f"[Done] {catalog}.{schema}.{table}")
+    except Exception as e:
+        print(f"[Error] {catalog}.{schema}.{table}: {e}")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -47,32 +44,18 @@ def main():
     parser.add_argument("--dry_run", type=bool, default=True)
     args = parser.parse_args()
 
-    conn = get_trino_connection(args.trino_host, args.username, args.password)
-    cursor = conn.cursor()
+    # Use one connection for listing tables
+    base_conn = get_trino_connection(args.trino_host, args.username, args.password)
+    tables = get_all_tables(base_conn, args.catalog, args.schema)
 
-    tables = get_base_tables(cursor, args.catalog, args.schema)
-
-    if not tables:
-        print(f"[INFO] No base tables found in {args.catalog}.{args.schema}. Exiting.")
-        return
-
-    if args.dry_run:
-        for table in tables:
-            sync_partition(cursor, args.catalog, args.schema, table, dry_run=True)
-    else:
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {
-                executor.submit(sync_partition, cursor, args.catalog, args.schema, table, dry_run=False): table
-                for table in tables
-            }
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Syncing Partitions"):
-                try:
-                    result = future.result()
-                    if result:
-                        print(result)
-                except Exception as e:
-                    print(f"[ERROR] Failed syncing {futures[future]}: {e}")
-
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(run_sync, table, args.trino_host, args.username, args.password,
+                            args.catalog, args.schema, args.dry_run): table
+            for table in tables
+        }
+        for _ in tqdm(as_completed(futures), total=len(futures), desc="Partition Sync Progress"):
+            pass
 
 if __name__ == "__main__":
     main()
